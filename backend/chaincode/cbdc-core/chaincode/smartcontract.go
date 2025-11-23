@@ -113,6 +113,26 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, fr
 		return fmt.Errorf("insufficient funds")
 	}
 
+	// Enforce Tier Limits (Phase 0 Requirement)
+	// Tier 0: 10,000 limit
+	// Tier 1: 100,000 limit
+	// Tier 2: 1,000,000 limit
+	var limit int64
+	switch sender.Tier {
+	case "Tier 0":
+		limit = 10000
+	case "Tier 1":
+		limit = 100000
+	case "Tier 2":
+		limit = 1000000
+	default:
+		limit = 0 // Unknown tier, block tx
+	}
+
+	if amount > limit {
+		return fmt.Errorf("transaction amount %d exceeds limit %d for %s", amount, limit, sender.Tier)
+	}
+
 	// 2. Get Receiver
 	receiverBytes, err := ctx.GetStub().GetState(toWalletID)
 	if err != nil {
