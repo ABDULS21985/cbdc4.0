@@ -292,6 +292,15 @@ type OfflinePurse struct {
 	Limit    int64  `json:"limit"`
 }
 
+// OfflineProof represents the cryptographic proof of an offline transaction
+type OfflineProof struct {
+	FromWalletID string `json:"from"`
+	ToWalletID   string `json:"to"`
+	Amount       int64  `json:"amount"`
+	Nonce        int64  `json:"nonce"`
+	Signature    string `json:"signature"`
+}
+
 // ReconcileOffline processes an offline transaction proof
 func (s *SmartContract) ReconcileOffline(ctx contractapi.TransactionContextInterface, proofJSON string) error {
 	// 1. Parse Proof (Simplified for prototype)
@@ -301,12 +310,9 @@ func (s *SmartContract) ReconcileOffline(ctx contractapi.TransactionContextInter
 	// For this build, we will simulate the reconciliation by just logging it and updating the wallet.
 	// We assume the 'proofJSON' contains { "from": "...", "to": "...", "amount": 10, "signature": "..." }
 
-	var proof struct {
-		FromWalletID string `json:"from"`
-		ToWalletID   string `json:"to"`
-		Amount       int64  `json:"amount"`
-		Signature    string `json:"signature"`
-	}
+	// We assume the 'proofJSON' contains the OfflineProof structure
+
+	var proof OfflineProof
 	if err := json.Unmarshal([]byte(proofJSON), &proof); err != nil {
 		return err
 	}
