@@ -8,6 +8,27 @@ import (
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
+// Wallet represents a user's holding capability
+type Wallet struct {
+	ID             string `json:"id"`
+	OwnerID        string `json:"owner_id"`
+	IntermediaryID string `json:"intermediary_id"`
+	Tier           string `json:"tier"`
+	Status         string `json:"status"`
+	Balance        int64  `json:"balance"`
+}
+
+// Transaction represents a movement of funds
+type Transaction struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Amount    int64  `json:"amount"`
+	Timestamp int64  `json:"timestamp"`
+	Signature []byte `json:"signature,omitempty"` // Added for Phase 4
+}
+
 // SmartContract provides functions for managing a CBDC
 type SmartContract struct {
 	contractapi.Contract
@@ -232,4 +253,99 @@ func (s *SmartContract) GetTransaction(ctx contractapi.TransactionContextInterfa
 	var tx Transaction
 	err = json.Unmarshal(txBytes, &tx)
 	return &tx, nil
+}
+
+// OfflinePurse represents a secure element on a device (Private Data)
+type OfflinePurse struct {
+	DeviceID string `json:"device_id"`
+	Counter  int64  `json:"counter"`
+	Limit    int64  `json:"limit"`
+}
+
+// ReconcileOffline processes an offline transaction proof
+func (s *SmartContract) ReconcileOffline(ctx contractapi.TransactionContextInterface, proofJSON string) error {
+	// 1. Parse Proof (Simplified for prototype)
+	// In production, this would verify Ed25519 signatures and check against the OfflinePurse state
+	// stored in a Private Data Collection.
+
+	// For this build, we will simulate the reconciliation by just logging it and updating the wallet.
+	// We assume the 'proofJSON' contains { "from": "...", "to": "...", "amount": 10, "signature": "..." }
+
+	var proof struct {
+		FromWalletID string `json:"from"`
+		ToWalletID   string `json:"to"`
+		Amount       int64  `json:"amount"`
+		Signature    string `json:"signature"`
+	}
+	if err := json.Unmarshal([]byte(proofJSON), &proof); err != nil {
+		return err
+	}
+
+	// 2. Update Balances (Reuse Transfer logic or call it directly)
+	// Note: Offline transactions usually mean funds were ALREADY deducted from the 'OfflinePurse'
+	// and now need to be deducted from the on-chain 'Shadow Account' or just settled.
+	// Here we treat it as a deferred transfer.
+
+	return s.Transfer(ctx, proof.FromWalletID, proof.ToWalletID, proof.Amount)
+}
+
+// FreezeWallet blocks a wallet from transacting
+func (s *SmartContract) FreezeWallet(ctx contractapi.TransactionContextInterface, walletID string) error {
+	// Check permissions (Central Bank or Regulator)
+	mspID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get MSP ID: %v", err)
+	}
+	// Simplified policy: Only CentralBankMSP for now
+	if mspID != "CentralBankMSP" {
+		return fmt.Errorf("unauthorized: only Central Bank can freeze wallets")
+	}
+
+	walletBytes, err := ctx.GetStub().GetState(walletID)
+	if err != nil {
+		return err
+	}
+	if walletBytes == nil {
+		return fmt.Errorf("wallet %s does not exist", walletID)
+	}
+
+	var wallet Wallet
+	err = json.Unmarshal(walletBytes, &wallet)
+	if err != nil {
+		return err
+	}
+
+	wallet.Status = "Frozen"
+	updatedWalletBytes, _ := json.Marshal(wallet)
+	return ctx.GetStub().PutState(walletID, updatedWalletBytes)
+}
+
+// UnfreezeWallet unblocks a wallet
+func (s *SmartContract) UnfreezeWallet(ctx contractapi.TransactionContextInterface, walletID string) error {
+	// Check permissions
+	mspID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get MSP ID: %v", err)
+	}
+	if mspID != "CentralBankMSP" {
+		return fmt.Errorf("unauthorized: only Central Bank can unfreeze wallets")
+	}
+
+	walletBytes, err := ctx.GetStub().GetState(walletID)
+	if err != nil {
+		return err
+	}
+	if walletBytes == nil {
+		return fmt.Errorf("wallet %s does not exist", walletID)
+	}
+
+	var wallet Wallet
+	err = json.Unmarshal(walletBytes, &wallet)
+	if err != nil {
+		return err
+	}
+
+	wallet.Status = "Active"
+	updatedWalletBytes, _ := json.Marshal(wallet)
+	return ctx.GetStub().PutState(walletID, updatedWalletBytes)
 }
