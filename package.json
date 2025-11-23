@@ -1,0 +1,20 @@
+{
+  "name": "cbdc-platform",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "frontend/*",
+    "frontend/packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+  },
+  "devDependencies": {
+    "turbo": "latest",
+    "prettier": "latest"
+  }
+}

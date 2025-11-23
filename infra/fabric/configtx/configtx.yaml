@@ -1,0 +1,180 @@
+Organizations:
+  - &OrdererOrg
+    Name: OrdererOrg
+    ID: OrdererMSP
+    MSPDir: ../crypto-config/ordererOrganizations/example.com/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('OrdererMSP.member')"
+      Writers:
+        Type: Signature
+        Rule: "OR('OrdererMSP.member')"
+      Admins:
+        Type: Signature
+        Rule: "OR('OrdererMSP.admin')"
+
+  - &OrgCentralBank
+    Name: OrgCentralBank
+    ID: CentralBankMSP
+    MSPDir: ../crypto-config/peerOrganizations/centralbank.cbdc/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('CentralBankMSP.admin', 'CentralBankMSP.peer', 'CentralBankMSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('CentralBankMSP.admin', 'CentralBankMSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('CentralBankMSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('CentralBankMSP.peer')"
+
+  - &OrgBankConsortium
+    Name: OrgBankConsortium
+    ID: BankConsortiumMSP
+    MSPDir: ../crypto-config/peerOrganizations/consortium.cbdc/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('BankConsortiumMSP.admin', 'BankConsortiumMSP.peer', 'BankConsortiumMSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('BankConsortiumMSP.admin', 'BankConsortiumMSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('BankConsortiumMSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('BankConsortiumMSP.peer')"
+
+  - &OrgRegulator
+    Name: OrgRegulator
+    ID: RegulatorMSP
+    MSPDir: ../crypto-config/peerOrganizations/regulator.cbdc/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('RegulatorMSP.admin', 'RegulatorMSP.peer', 'RegulatorMSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('RegulatorMSP.admin', 'RegulatorMSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('RegulatorMSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('RegulatorMSP.peer')"
+
+Capabilities:
+  Channel: &ChannelCapabilities
+    V2_0: true
+  Orderer: &OrdererCapabilities
+    V2_0: true
+  Application: &ApplicationCapabilities
+    V2_0: true
+
+Application: &ApplicationDefaults
+  Organizations:
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+    LifecycleEndorsement:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Endorsement"
+    Endorsement:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Endorsement"
+  Capabilities:
+    <<: *ApplicationCapabilities
+
+Orderer: &OrdererDefaults
+  OrdererType: etcdraft
+  Addresses:
+    - orderer.example.com:7050
+    - orderer2.example.com:7050
+    - orderer3.example.com:7050
+  EtcdRaft:
+    Consenters:
+      - Host: orderer.example.com
+        Port: 7050
+        ClientTLSCert: ../crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/tls/server.crt
+        ServerTLSCert: ../crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/tls/server.crt
+      - Host: orderer2.example.com
+        Port: 7050
+        ClientTLSCert: ../crypto-config/ordererOrganizations/example.com/orderers/orderer2.example.com/tls/server.crt
+        ServerTLSCert: ../crypto-config/ordererOrganizations/example.com/orderers/orderer2.example.com/tls/server.crt
+      - Host: orderer3.example.com
+        Port: 7050
+        ClientTLSCert: ../crypto-config/ordererOrganizations/example.com/orderers/orderer3.example.com/tls/server.crt
+        ServerTLSCert: ../crypto-config/ordererOrganizations/example.com/orderers/orderer3.example.com/tls/server.crt
+  BatchTimeout: 2s
+  BatchSize:
+    MaxMessageCount: 10
+    AbsoluteMaxBytes: 99 MB
+    PreferredMaxBytes: 512 KB
+  Organizations:
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+    BlockValidation:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+
+Channel: &ChannelDefaults
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+  Capabilities:
+    <<: *ChannelCapabilities
+
+Profiles:
+  TwoOrgsOrdererGenesis:
+    <<: *ChannelDefaults
+    Orderer:
+      <<: *OrdererDefaults
+      Organizations:
+        - *OrdererOrg
+      Capabilities:
+        <<: *OrdererCapabilities
+    Consortiums:
+      SampleConsortium:
+        Organizations:
+          - *OrgCentralBank
+          - *OrgBankConsortium
+          - *OrgRegulator
+
+  CbdcMainChannel:
+    Consortium: SampleConsortium
+    <<: *ChannelDefaults
+    Application:
+      <<: *ApplicationDefaults
+      Organizations:
+        - *OrgCentralBank
+        - *OrgBankConsortium
+        - *OrgRegulator
+      Capabilities:
+        <<: *ApplicationCapabilities

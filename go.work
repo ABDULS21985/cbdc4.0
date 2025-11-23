@@ -1,0 +1,14 @@
+go 1.21
+
+use (
+	./backend/services/auth-service
+	./backend/services/wallet-service
+	./backend/services/payments-service
+	./backend/services/offline-service
+	./backend/services/intermediary-gateway-service
+	./backend/services/rtgs-adapter
+	./backend/services/cbn-ops-service
+	./backend/chaincode/cbdc-core
+	./backend/pkg/api
+	./backend/pkg/common
+)

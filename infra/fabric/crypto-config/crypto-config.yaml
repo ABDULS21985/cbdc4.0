@@ -1,0 +1,33 @@
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer
+      - Hostname: orderer2
+      - Hostname: orderer3
+
+PeerOrgs:
+  - Name: OrgCentralBank
+    Domain: centralbank.cbdc
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+    Users:
+      Count: 1
+
+  - Name: OrgBankConsortium
+    Domain: consortium.cbdc
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+    Users:
+      Count: 1
+
+  - Name: OrgRegulator
+    Domain: regulator.cbdc
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1
