@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -55,7 +56,8 @@ func (s *Service) TransferHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Call Chaincode
-	result, err := s.fabric.SubmitTransaction("Transfer", req.From, req.To, string(req.Amount))
+	amountStr := fmt.Sprintf("%d", req.Amount)
+	result, err := s.fabric.SubmitTransaction("Transfer", req.From, req.To, amountStr)
 	if err != nil {
 		log.Printf("Failed to submit transaction: %v", err)
 		// Update DB to Failed
@@ -186,7 +188,8 @@ func (s *Service) MerchantPaymentHandler(w http.ResponseWriter, r *http.Request)
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		txID, req.From, req.To, req.Amount, "Pending", "P2B", 0, "NGN", "POS", req.Description)
 
-	result, err := s.fabric.SubmitTransaction("Transfer", req.From, req.To, string(req.Amount))
+	amountStr := fmt.Sprintf("%d", req.Amount)
+	result, err := s.fabric.SubmitTransaction("Transfer", req.From, req.To, amountStr)
 	if err != nil {
 		log.Printf("Failed to submit merchant transaction: %v", err)
 		s.db.Exec("UPDATE payments_db.transactions SET status = 'Failed' WHERE id = $1", txID)

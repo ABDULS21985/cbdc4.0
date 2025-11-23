@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -126,6 +127,42 @@ func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	api.WriteSuccess(w, http.StatusOK, models.WalletBalance{Balance: wallet.Balance, Currency: "NGN"})
 }
 
+func (s *Service) LockFundsHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"user_id"`
+		Amount int64  `json:"amount"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "Invalid request body", "")
+		return
+	}
+
+	// 1. Get Wallet ID
+	walletID := "wallet-" + req.UserID
+
+	// 2. Call Fabric to Transfer (Debit User, Credit "OfflineReserve" or Burn)
+	// For this phase, we'll simulate locking by transferring to a "Reserve" wallet.
+	// Assuming "ReserveWallet" exists or we just burn it.
+	// Let's use a "Burn" or "Lock" chaincode method if available, or just Transfer to a known reserve.
+	// We'll use "Transfer" to "offline-reserve-wallet" for now.
+	reserveWallet := "offline-reserve-wallet"
+
+	amountStr := fmt.Sprintf("%d", req.Amount)
+	_, err := s.fabric.SubmitTransaction("Transfer", walletID, reserveWallet, amountStr)
+	// Note: SubmitTransaction takes strings. string(req.Amount) is wrong, it converts rune. Need strconv.
+	// But wait, my previous code used string(req.Amount) which is definitely a bug if Amount is int64.
+	// I should fix that.
+
+	if err != nil {
+		log.Printf("Failed to lock funds: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "chain_error", "Failed to lock funds on chain", "")
+		return
+	}
+
+	api.WriteSuccess(w, http.StatusOK, map[string]string{"status": "locked", "tx_id": "simulated-tx-id"})
+}
+
 func main() {
 	cfg := common.LoadConfig()
 
@@ -159,6 +196,7 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/wallets", svc.CreateWalletHandler).Methods("POST")
+	r.HandleFunc("/wallets/lock", svc.LockFundsHandler).Methods("POST") // New Endpoint
 	r.HandleFunc("/wallets/{id}", svc.GetWalletHandler).Methods("GET")
 	r.HandleFunc("/wallets/{id}/balance", svc.GetBalanceHandler).Methods("GET")
 
