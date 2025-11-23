@@ -1,11 +1,18 @@
 OrdererOrgs:
   - Name: Orderer
-    Domain: example.com
+    Domain: centralbank.cbdc
     EnableNodeOUs: true
     Specs:
-      - Hostname: orderer
+      - Hostname: orderer1
       - Hostname: orderer2
       - Hostname: orderer3
+
+  - Name: OrdererConsortium
+    Domain: consortium.cbdc
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer1
+      - Hostname: orderer2
 
 PeerOrgs:
   - Name: OrgCentralBank

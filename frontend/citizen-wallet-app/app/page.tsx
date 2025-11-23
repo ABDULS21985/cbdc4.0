@@ -1,24 +1,55 @@
-import React from 'react';
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import { Button } from '@cbdc/ui/Button'; // Assuming we configured aliases or workspace linking
+import { Card } from '@cbdc/ui/Card';
+import { Input } from '@cbdc/ui/Input';
 
 export default function Home() {
+    const [balance, setBalance] = useState<number | null>(null);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        // Fetch balance on load
+        fetchBalance();
+    }, []);
+
+    const fetchBalance = async () => {
+        setLoading(true);
+        try {
+            // In a real app, we'd use a proxy or env var for the API URL
+            const res = await fetch('http://localhost:8082/wallets/wallet-alice-123'); // Mocked ID
+            if (res.ok) {
+                const data = await res.json();
+                setBalance(data.balance);
+            }
+        } catch (err) {
+            console.error("Failed to fetch balance", err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
-        <main className="flex min-h-screen flex-col items-center p-4 bg-gray-50">
-            <div className="w-full max-w-md bg-white rounded-xl shadow-md overflow-hidden md:max-w-2xl mt-10 p-6">
-                <div className="uppercase tracking-wide text-sm text-indigo-500 font-semibold">My Wallet</div>
-                <div className="mt-2">
-                    <h1 className="text-4xl font-bold text-gray-900">₦ 1,500.00</h1>
-                    <p className="text-gray-500">Available Balance</p>
+        <main className="flex min-h-screen flex-col items-center justify-center p-24 bg-gray-50">
+            <Card className="w-full max-w-md">
+                <h1 className="text-2xl font-bold mb-6 text-center">My CBDC Wallet</h1>
+
+                <div className="mb-8 text-center">
+                    <p className="text-gray-500">Current Balance</p>
+                    <div className="text-4xl font-bold text-blue-600">
+                        {loading ? 'Loading...' : `₦ ${balance ?? '0.00'}`}
+                    </div>
                 </div>
 
-                <div className="mt-8 grid grid-cols-2 gap-4">
-                    <button className="bg-indigo-600 text-white py-3 rounded-lg font-medium hover:bg-indigo-700">
-                        Send
-                    </button>
-                    <button className="bg-gray-200 text-gray-800 py-3 rounded-lg font-medium hover:bg-gray-300">
-                        Receive
-                    </button>
+                <div className="space-y-4">
+                    <Input placeholder="Recipient Address" label="Send To" />
+                    <Input placeholder="Amount" type="number" label="Amount" />
+                    <Button className="w-full" onClick={() => alert('Transfer initiated!')}>
+                        Send Money
+                    </Button>
                 </div>
-            </div>
+            </Card>
         </main>
     );
 }

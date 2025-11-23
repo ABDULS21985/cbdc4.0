@@ -67,7 +67,31 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/payments/p2p", svc.TransferHandler).Methods("POST")
+	r.HandleFunc("/payments/merchant", svc.MerchantPaymentHandler).Methods("POST")
 
 	log.Printf("Payments Service running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
+}
+
+func (s *Service) MerchantPaymentHandler(w http.ResponseWriter, r *http.Request) {
+	var req PaymentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Merchant specific validation (e.g. check if To is a valid merchant wallet)
+	// For now, we reuse the Transfer logic but could add metadata
+
+	// Call Chaincode
+	result, err := s.fabric.SubmitTransaction("Transfer", req.From, req.To, string(req.Amount))
+	if err != nil {
+		log.Printf("Failed to submit merchant transaction: %v", err)
+		http.Error(w, "Transaction failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(result)
 }

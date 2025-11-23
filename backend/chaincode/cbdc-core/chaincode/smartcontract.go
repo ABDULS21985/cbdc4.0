@@ -92,7 +92,7 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, fr
 	ctx.GetStub().PutState(fromWalletID, senderUpdated)
 	ctx.GetStub().PutState(toWalletID, receiverUpdated)
 
-	// 5. Emit Event (Optional)
+	// 5. Save Transaction Record
 	tx := Transaction{
 		ID:        ctx.GetStub().GetTxID(),
 		Type:      "Transfer",
@@ -102,6 +102,9 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, fr
 		Timestamp: time.Now().Unix(),
 	}
 	txBytes, _ := json.Marshal(tx)
+	ctx.GetStub().PutState(tx.ID, txBytes)
+
+	// 6. Emit Event
 	ctx.GetStub().SetEvent("TransferEvent", txBytes)
 
 	return nil
@@ -143,4 +146,24 @@ func (s *SmartContract) GetWallet(ctx contractapi.TransactionContextInterface, i
 	var wallet Wallet
 	err = json.Unmarshal(walletBytes, &wallet)
 	return &wallet, nil
+}
+
+// GetTransaction returns the transaction details
+func (s *SmartContract) GetTransaction(ctx contractapi.TransactionContextInterface, id string) (*Transaction, error) {
+	// Note: In Fabric, transactions are stored in blocks, but we can query the world state if we saved the Tx object there.
+	// In our Transfer function, we didn't explicitly save the Tx object to the world state, we only emitted an event.
+	// To support this query, we should modify Transfer to save the Tx object or rely on an off-chain indexer.
+	// For this build phase, let's implement saving the Tx to world state in Transfer.
+
+	txBytes, err := ctx.GetStub().GetState(id)
+	if err != nil {
+		return nil, err
+	}
+	if txBytes == nil {
+		return nil, fmt.Errorf("transaction %s does not exist", id)
+	}
+
+	var tx Transaction
+	err = json.Unmarshal(txBytes, &tx)
+	return &tx, nil
 }
