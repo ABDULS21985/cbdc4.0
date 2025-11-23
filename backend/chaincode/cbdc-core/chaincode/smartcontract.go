@@ -21,7 +21,18 @@ func (s *SmartContract) InitLedger(ctx contractapi.TransactionContextInterface) 
 
 // Issue mints new CBDC to a bank's wallet. Only Central Bank can call this.
 func (s *SmartContract) Issue(ctx contractapi.TransactionContextInterface, toWalletID string, amount int64) error {
-	// TODO: Check if caller is Central Bank Admin
+	// Check if caller is from Central Bank MSP
+	mspID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get MSP ID: %v", err)
+	}
+	if mspID != "CentralBankMSP" {
+		return fmt.Errorf("unauthorized: only Central Bank can issue CBDC")
+	}
+
+	// In a real prod environment, we would also check for specific 'admin' attribute or OU
+	// val, found, err := ctx.GetClientIdentity().GetAttributeValue("role")
+	// if !found || val != "admin" { ... }
 
 	walletBytes, err := ctx.GetStub().GetState(toWalletID)
 	if err != nil {
