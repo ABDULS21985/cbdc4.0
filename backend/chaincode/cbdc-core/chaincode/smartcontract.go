@@ -164,14 +164,9 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, fr
 		return fmt.Errorf("insufficient funds")
 	}
 
-	// Enforce Tier Limits (Phase 0 Requirement)
-	// Tier 0: 10,000 limit
-	// Tier 1: 100,000 limit
-	// Tier 2: 1,000,000 limit
-	var limit int64
-	// Enforce Tier Limits (Phase 0 Requirement)
-	// Tier 0: 10,000 limit
-	// Tier 1: 100,000 limit
+	// Enforce Tier Limits (Phase 0/8 Requirement)
+	// Tier 0: $500 balance, $100 daily tx (simplified to 10,000 smallest units)
+	// Tier 1: $10,000 balance, $2,000 daily tx (100,000 smallest units)
 	// Tier 2: 1,000,000 limit
 	var limit int64
 	switch sender.Tier {
@@ -447,4 +442,119 @@ func (s *SmartContract) UnfreezeWallet(ctx contractapi.TransactionContextInterfa
 	wallet.Status = "Active"
 	updatedWalletBytes, _ := json.Marshal(wallet)
 	return ctx.GetStub().PutState(walletID, updatedWalletBytes)
+}
+
+// BatchReconcile processes a batch of offline transaction proofs
+// This is called by the offline-service to settle multiple offline transactions at once
+func (s *SmartContract) BatchReconcile(ctx contractapi.TransactionContextInterface, proofsJSON string) error {
+	var proofs []OfflineProof
+	if err := json.Unmarshal([]byte(proofsJSON), &proofs); err != nil {
+		return fmt.Errorf("failed to parse proofs: %v", err)
+	}
+
+	if len(proofs) == 0 {
+		return fmt.Errorf("empty batch")
+	}
+
+	// Process each proof in the batch
+	successCount := 0
+	for i, proof := range proofs {
+		err := s.processOfflineProof(ctx, proof, i)
+		if err != nil {
+			// Log error but continue processing other proofs
+			// In production, might want to collect all errors
+			continue
+		}
+		successCount++
+	}
+
+	// Emit batch event
+	batchResult := map[string]interface{}{
+		"batch_size":    len(proofs),
+		"success_count": successCount,
+		"timestamp":     time.Now().Unix(),
+	}
+	eventBytes, _ := json.Marshal(batchResult)
+	ctx.GetStub().SetEvent("BatchReconcileEvent", eventBytes)
+
+	return nil
+}
+
+// processOfflineProof handles a single offline proof within a batch
+func (s *SmartContract) processOfflineProof(ctx contractapi.TransactionContextInterface, proof OfflineProof, index int) error {
+	// 1. Get Sender
+	senderBytes, err := ctx.GetStub().GetState(proof.FromWalletID)
+	if err != nil {
+		return err
+	}
+	if senderBytes == nil {
+		return fmt.Errorf("sender wallet not found: %s", proof.FromWalletID)
+	}
+	var sender Wallet
+	json.Unmarshal(senderBytes, &sender)
+
+	// 2. Get Receiver
+	receiverBytes, err := ctx.GetStub().GetState(proof.ToWalletID)
+	if err != nil {
+		return err
+	}
+	if receiverBytes == nil {
+		return fmt.Errorf("receiver wallet not found: %s", proof.ToWalletID)
+	}
+	var receiver Wallet
+	json.Unmarshal(receiverBytes, &receiver)
+
+	// 3. Validate and Update
+	if sender.Balance < proof.Amount {
+		return fmt.Errorf("insufficient funds for proof %d", index)
+	}
+
+	sender.Balance -= proof.Amount
+	receiver.Balance += proof.Amount
+
+	senderUpdated, _ := json.Marshal(sender)
+	receiverUpdated, _ := json.Marshal(receiver)
+	ctx.GetStub().PutState(proof.FromWalletID, senderUpdated)
+	ctx.GetStub().PutState(proof.ToWalletID, receiverUpdated)
+
+	// 4. Record Transaction with unique ID for batch
+	txID := fmt.Sprintf("%s-batch-%d", ctx.GetStub().GetTxID(), index)
+	tx := Transaction{
+		ID:        txID,
+		Type:      "OfflineReconcile",
+		From:      proof.FromWalletID,
+		To:        proof.ToWalletID,
+		Amount:    proof.Amount,
+		Timestamp: time.Now().Unix(),
+		Signature: []byte(proof.Signature),
+	}
+	txBytes, _ := json.Marshal(tx)
+	return ctx.GetStub().PutState(txID, txBytes)
+}
+
+// GetTotalSupply returns the total CBDC in circulation (sum of all wallet balances)
+func (s *SmartContract) GetTotalSupply(ctx contractapi.TransactionContextInterface) (int64, error) {
+	// In production, maintain a running total. For now, iterate through wallets.
+	// This is expensive and should be cached.
+	resultsIterator, err := ctx.GetStub().GetStateByRange("wallet-", "wallet-~")
+	if err != nil {
+		return 0, err
+	}
+	defer resultsIterator.Close()
+
+	var total int64
+	for resultsIterator.HasNext() {
+		result, err := resultsIterator.Next()
+		if err != nil {
+			return 0, err
+		}
+
+		var wallet Wallet
+		if err := json.Unmarshal(result.Value, &wallet); err != nil {
+			continue
+		}
+		total += wallet.Balance
+	}
+
+	return total, nil
 }

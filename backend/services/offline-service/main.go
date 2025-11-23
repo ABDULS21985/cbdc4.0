@@ -1,4 +1,3 @@
-```go
 package main
 
 import (
@@ -8,9 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
@@ -22,9 +21,18 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// Risk control constants from Phase 7 design
+const (
+	MaxOfflineBalance     = 500 // $500 max offline balance
+	MaxTransactionAmount  = 50  // $50 max per transaction
+	SyncTTLDays           = 7   // 7 days max before sync required
+)
+
 type Service struct {
-	db     *sql.DB
-	fabric *fabricclient.Client
+	db               *sql.DB
+	fabric           *fabricclient.Client
+	ganache          *GanacheClient
+	walletServiceURL string
 }
 
 func main() {
@@ -42,7 +50,9 @@ func main() {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
-	fabric, err := fabricclient.NewClient(
+	// Initialize Fabric client
+	var fabric *fabricclient.Client
+	fabric, err = fabricclient.NewClient(
 		cfg.FabricConfig,
 		"cbdc-main-channel",
 		"cbdc-core",
@@ -56,15 +66,39 @@ func main() {
 		defer fabric.Close()
 	}
 
-	svc := &Service{db: database, fabric: fabric}
+	// Initialize Ganache client for offline voucher verification
+	ganacheURL := os.Getenv("GANACHE_URL")
+	if ganacheURL == "" {
+		ganacheURL = "http://localhost:8545"
+	}
+	ganache := NewGanacheClient(ganacheURL)
+
+	// Wallet service URL for fund locking
+	walletServiceURL := os.Getenv("WALLET_SERVICE_URL")
+	if walletServiceURL == "" {
+		walletServiceURL = "http://localhost:8082"
+	}
+
+	svc := &Service{
+		db:               database,
+		fabric:           fabric,
+		ganache:          ganache,
+		walletServiceURL: walletServiceURL,
+	}
 
 	r := mux.NewRouter()
 	r.HandleFunc("/offline/device", svc.RegisterDeviceHandler).Methods("POST")
 	r.HandleFunc("/offline/fund", svc.FundPurseHandler).Methods("POST")
 	r.HandleFunc("/offline/reconcile", svc.ReconcileHandler).Methods("POST")
+	r.HandleFunc("/offline/purse/{deviceId}", svc.GetPurseHandler).Methods("GET")
+	r.HandleFunc("/health", svc.HealthHandler).Methods("GET")
 
 	log.Printf("Offline Service running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
+}
+
+func (s *Service) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	api.WriteSuccess(w, http.StatusOK, map[string]string{"status": "healthy", "service": "offline-service"})
 }
 
 func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) {
@@ -74,14 +108,20 @@ func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Validate public key format (should be hex-encoded Ed25519 public key)
+	if len(req.PublicKey) != 64 { // 32 bytes = 64 hex chars
+		api.WriteError(w, http.StatusBadRequest, "invalid_public_key", "Public key must be 64 hex characters", "")
+		return
+	}
+
 	// Store DeviceID <-> UserID mapping in DB
 	deviceID := "dev-" + req.PublicKey[:8] // Simplified ID
 
 	_, err := s.db.Exec(`
 		INSERT INTO offline_db.devices (
-			id, public_key, user_id, counter, hardware_id, os_version, trusted_status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		deviceID, req.PublicKey, req.UserID, 0, req.HardwareID, req.OSVersion, "TRUSTED")
+			id, public_key, user_id, counter, hardware_id, os_version, trusted_status, last_sync_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		deviceID, req.PublicKey, req.UserID, 0, req.HardwareID, req.OSVersion, "TRUSTED", time.Now())
 
 	if err != nil {
 		log.Printf("Failed to register device: %v", err)
@@ -99,8 +139,21 @@ func (s *Service) FundPurseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate amount against balance cap
+	var currentBalance int64
+	err := s.db.QueryRow("SELECT COALESCE(balance, 0) FROM offline_db.purses WHERE device_id = $1", req.DeviceID).Scan(&currentBalance)
+	if err != nil && err != sql.ErrNoRows {
+		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to query purse", "")
+		return
+	}
+
+	if currentBalance+req.Amount > MaxOfflineBalance {
+		api.WriteError(w, http.StatusBadRequest, "balance_limit_exceeded",
+			fmt.Sprintf("Would exceed max offline balance of %d", MaxOfflineBalance), "")
+		return
+	}
+
 	// 1. Call Wallet Service to Lock Funds (Real HTTP Call)
-	walletServiceURL := "http://localhost:8082/wallets/lock" // Should be in config
 	lockReq := map[string]interface{}{
 		"user_id": req.UserID,
 		"amount":  req.Amount,
@@ -108,7 +161,7 @@ func (s *Service) FundPurseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	lockBody, _ := json.Marshal(lockReq)
 
-	resp, err := http.Post(walletServiceURL, "application/json", bytes.NewBuffer(lockBody))
+	resp, err := http.Post(s.walletServiceURL+"/wallets/lock", "application/json", bytes.NewBuffer(lockBody))
 	if err != nil {
 		log.Printf("Failed to call wallet service: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "upstream_error", "Failed to contact wallet service", "")
@@ -123,18 +176,14 @@ func (s *Service) FundPurseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Update Offline Purse Balance (Shadow)
-	// Check if purse exists
-	var currentBalance int64
-	err = s.db.QueryRow("SELECT balance FROM offline_db.purses WHERE device_id = $1", req.DeviceID).Scan(&currentBalance)
 	if err == sql.ErrNoRows {
 		// Create purse
-		_, err = s.db.Exec(`INSERT INTO offline_db.purses (device_id, user_id, balance, counter) VALUES ($1, $2, $3, 0)`, req.DeviceID, req.UserID, req.Amount)
-	} else if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to query purse", "")
-		return
+		_, err = s.db.Exec(`INSERT INTO offline_db.purses (device_id, user_id, balance, counter, last_sync_at, status)
+			VALUES ($1, $2, $3, 0, $4, 'ACTIVE')`, req.DeviceID, req.UserID, req.Amount, time.Now())
 	} else {
 		// Update purse
-		_, err = s.db.Exec(`UPDATE offline_db.purses SET balance = balance + $1 WHERE device_id = $2`, req.Amount, req.DeviceID)
+		_, err = s.db.Exec(`UPDATE offline_db.purses SET balance = balance + $1, last_sync_at = $2 WHERE device_id = $3`,
+			req.Amount, time.Now(), req.DeviceID)
 	}
 
 	if err != nil {
@@ -143,54 +192,59 @@ func (s *Service) FundPurseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Generate Signed Certificate (PurseUpdate) using Real Crypto
-	// In production, load private key from secure storage (Vault/HSM).
-	// Here we generate a key on fly or use a static one for demo if not provided.
-	// Let's use a static seed for "Central Bank" key for reproducibility in this demo.
-	seed := make([]byte, ed25519.SeedSize) // Zero seed for demo
+	// In production, load private key from HSM/Vault. Using static seed for demo.
+	seed := make([]byte, ed25519.SeedSize)
 	privateKey := ed25519.NewKeyFromSeed(seed)
 
-	// Message to sign: DeviceID + Amount + Counter(0 for new funding or current?)
-	// Let's sign "DeviceID:Amount"
-	msg := fmt.Sprintf("%s:%d", req.DeviceID, req.Amount)
+	// Message to sign: DeviceID + Amount + Timestamp
+	timestamp := time.Now().Unix()
+	msg := fmt.Sprintf("%s:%d:%d", req.DeviceID, req.Amount, timestamp)
 	signature := hex.EncodeToString(ed25519.Sign(privateKey, []byte(msg)))
+
+	// Also verify on Ganache if available (for prototyping)
+	if s.ganache != nil {
+		go func() {
+			if err := s.ganache.VerifyOfflineFunding(req.DeviceID, req.Amount, signature); err != nil {
+				log.Printf("Ganache verification failed (non-blocking): %v", err)
+			}
+		}()
+	}
 
 	api.WriteSuccess(w, http.StatusOK, map[string]interface{}{
 		"status":    "funded",
 		"device_id": req.DeviceID,
 		"amount":    req.Amount,
 		"signature": signature,
+		"timestamp": timestamp,
 	})
 }
 
-func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
-	// Request a new offline purse (signed voucher)
-	// In a real system, this would interact with the Central Bank's signing service
+func (s *Service) GetPurseHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	deviceID := vars["deviceId"]
 
-	// Create voucher record
-	voucherID := "vouch-" + time.Now().Format("20060102150405")
-	deviceID := "dev-mock" // Should come from auth context
-	amount := int64(1000)
-	signature := "mock-signature-from-cbn"
-	expiresAt := time.Now().Add(24 * time.Hour) // 24h validity
+	var purse models.OfflinePurse
+	err := s.db.QueryRow(`
+		SELECT device_id, user_id, balance, counter, COALESCE(last_sync_hash, ''), last_sync_at, status
+		FROM offline_db.purses WHERE device_id = $1`, deviceID).Scan(
+		&purse.DeviceID, &purse.UserID, &purse.Balance, &purse.Counter,
+		&purse.LastSyncHash, &purse.LastSyncAt, &purse.Status)
 
-	_, err := s.db.Exec(`
-		INSERT INTO offline_db.vouchers (
-			id, device_id, amount, status, signature, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6)`,
-		voucherID, deviceID, amount, "Active", signature, expiresAt)
-
+	if err == sql.ErrNoRows {
+		api.WriteError(w, http.StatusNotFound, "not_found", "Purse not found", "")
+		return
+	}
 	if err != nil {
-		log.Printf("Failed to create voucher: %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to issue purse", "")
+		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to query purse", "")
 		return
 	}
 
-	api.WriteSuccess(w, http.StatusCreated, map[string]interface{}{
-		"purse_id":   voucherID,
-		"limit":      amount,
-		"signature":  signature,
-		"expires_at": expiresAt,
-	})
+	// Check if locked due to TTL
+	if time.Since(purse.LastSyncAt) > time.Duration(SyncTTLDays)*24*time.Hour {
+		purse.Status = "LOCKED_TTL"
+	}
+
+	api.WriteSuccess(w, http.StatusOK, purse)
 }
 
 func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
@@ -203,154 +257,155 @@ func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 	validCount := 0
 	failedCount := 0
 	validProofs := []map[string]interface{}{}
+	failedReasons := []string{}
 
 	for _, tx := range req.Transactions {
-		// 1. Verify Signature (Real Ed25519)
-		if tx.Signature == "" {
-			log.Printf("Missing signature for tx from %s", tx.PayerID)
+		reason := s.processTransaction(tx, &validProofs)
+		if reason != "" {
 			failedCount++
-			continue
+			failedReasons = append(failedReasons, reason)
+		} else {
+			validCount++
 		}
-
-		// Fetch Public Key
-		var publicKeyHex string
-		err := s.db.QueryRow("SELECT public_key FROM offline_db.devices WHERE id = $1", tx.PayerID).Scan(&publicKeyHex)
-		if err != nil {
-			log.Printf("Device not found or DB error: %s", tx.PayerID)
-			failedCount++
-			continue
-		}
-
-		// Verify
-		if !verifySignature(tx, publicKeyHex) {
-			log.Printf("Invalid signature for tx from %s", tx.PayerID)
-			failedCount++
-			continue
-		}
-
-		// 2. Risk Controls & Double Spend Check
-		// 2a. Tx Limit ($50)
-		if tx.Amount > 50 {
-			log.Printf("Transaction amount %d exceeds limit 50", tx.Amount)
-			failedCount++
-			continue
-		}
-
-		// 2b. Balance Cap Check ($500) - Need to check current balance
-		var currentBalance int64
-		var lastSyncAt time.Time
-		err = s.db.QueryRow("SELECT balance, last_sync_at FROM offline_db.purses WHERE device_id = $1", tx.PayerID).Scan(&currentBalance, &lastSyncAt)
-		if err != nil {
-			log.Printf("Purse not found for %s", tx.PayerID)
-			failedCount++
-			continue
-		}
-		// Note: This check is tricky during reconciliation because the balance is changing.
-		// But we can check if the *resulting* balance would be weird, or if the *previous* balance was valid.
-		// Actually, the limit is on the *offline* device holding.
-		// If we are reconciling, we are *reducing* the offline balance.
-		// So the cap check is more relevant during Funding.
-		// However, we can check if the transaction implies a balance violation occurred offline?
-		// Let's skip balance cap here as it's an offline enforcement rule, but we enforce Tx Limit.
-
-		// 2c. TTL Check (7 Days)
-		if time.Since(lastSyncAt) > 7*24*time.Hour {
-			log.Printf("Device %s has not synced in 7 days. Transaction rejected.", tx.PayerID)
-			// In reality, we might accept it but flag it, or reject it.
-			// Strict enforcement: Reject.
-			failedCount++
-			continue
-		}
-
-		// 2d. Double Spend (Used Counters)
-		var exists bool
-		err = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM offline_db.used_counters WHERE device_id = $1 AND counter = $2)", tx.PayerID, tx.Counter).Scan(&exists)
-		if err != nil {
-			log.Printf("DB Error checking counter: %v", err)
-			failedCount++
-			continue
-		}
-		if exists {
-			log.Printf("Double spend detected! Device: %s, Counter: %d", tx.PayerID, tx.Counter)
-			// Trigger Fraud Alert Logic Here
-			failedCount++
-			continue
-		}
-
-		// 3. Process Transaction
-		// Insert into used_counters
-		_, err = s.db.Exec("INSERT INTO offline_db.used_counters (device_id, counter, tx_hash) VALUES ($1, $2, $3)", tx.PayerID, tx.Counter, "hash-"+tx.Signature)
-		if err != nil {
-			log.Printf("Failed to record counter: %v", err)
-			failedCount++
-			continue
-		}
-
-		// Debit Payer Shadow Balance
-		_, err = s.db.Exec("UPDATE offline_db.purses SET balance = balance - $1 WHERE device_id = $2", tx.Amount, tx.PayerID)
-		if err != nil {
-			log.Printf("Failed to debit shadow balance: %v", err)
-			// Rollback counter? In a transaction, yes. Here we skip for simplicity but note it.
-		}
-
-		// Prepare for Batch Settlement
-		// Map DeviceID to WalletID (Assuming PayerID is DeviceID, we need PayerWalletID)
-		// For simplicity, let's assume PayerWalletID = "wallet-" + UserID associated with Device.
-		var payerUserID string
-		s.db.QueryRow("SELECT user_id FROM offline_db.devices WHERE id = $1", tx.PayerID).Scan(&payerUserID)
-		payerWalletID := "wallet-" + payerUserID
-
-		// PayeeWalletID = "wallet-" + PayeeID (Assuming PayeeID in tx is UserID or DeviceID? Design says PayeeID is DevicePK usually, but let's assume it maps to a user)
-		// If PayeeID is a DeviceID, we need to look it up.
-		// Let's assume PayeeID in SignedPayment is the Payee's DeviceID.
-		var payeeUserID string
-		err = s.db.QueryRow("SELECT user_id FROM offline_db.devices WHERE id = $1", tx.PayeeID).Scan(&payeeUserID)
-		if err != nil {
-			// Fallback: maybe PayeeID is already a UserID?
-			payeeUserID = tx.PayeeID
-		}
-		payeeWalletID := "wallet-" + payeeUserID
-
-		proof := map[string]interface{}{
-			"from":      payerWalletID,
-			"to":        payeeWalletID,
-			"amount":    tx.Amount,
-			"nonce":     tx.Counter,
-			"signature": tx.Signature,
-		}
-		validProofs = append(validProofs, proof)
-
-		// 4. Real Online Crediting (Direct DB Update for immediate feedback)
-		// We credit the payee's wallet in the local DB.
-		// Note: The Fabric event will eventually confirm this, but we do it optimistically here.
-		// Or we wait for Fabric. Given "Production Grade", we should probably wait or use the event listener.
-		// But the user asked for "Real Online Crediting (DB Update)".
-		// Let's update the local wallet balance.
-		_, err = s.db.Exec("UPDATE wallet_db.wallets SET balance = balance + $1 WHERE id = $2", tx.Amount, payeeWalletID)
-		if err != nil {
-			log.Printf("Failed to update local wallet balance: %v", err)
-		}
-
-		validCount++
 	}
 
-	// 5. Submit Batch to Fabric
+	// Submit Batch to Fabric using BatchReconcile
 	if len(validProofs) > 0 && s.fabric != nil {
 		proofsJSON, _ := json.Marshal(validProofs)
 		log.Printf("Submitting batch to Fabric: %s", proofsJSON)
 		_, err := s.fabric.SubmitTransaction("BatchReconcile", string(proofsJSON))
 		if err != nil {
 			log.Printf("Failed to submit batch to Fabric: %v", err)
-			// We might want to queue this for retry
+			// Queue for retry in production
 		}
 	}
 
+	// Update last sync time for the submitting device
+	s.db.Exec("UPDATE offline_db.purses SET last_sync_at = $1 WHERE device_id = $2", time.Now(), req.DeviceID)
+
 	api.WriteSuccess(w, http.StatusOK, map[string]interface{}{
-		"status":       "processed",
-		"valid_count":  validCount,
-		"failed_count": failedCount,
-		"batch_size":   len(validProofs),
+		"status":         "processed",
+		"valid_count":    validCount,
+		"failed_count":   failedCount,
+		"batch_size":     len(validProofs),
+		"failed_reasons": failedReasons,
 	})
+}
+
+func (s *Service) processTransaction(tx models.SignedPayment, validProofs *[]map[string]interface{}) string {
+	// 1. Verify Signature (Real Ed25519)
+	if tx.Signature == "" {
+		log.Printf("Missing signature for tx from %s", tx.PayerID)
+		return fmt.Sprintf("missing_signature:%s", tx.PayerID)
+	}
+
+	// Fetch Public Key
+	var publicKeyHex string
+	err := s.db.QueryRow("SELECT public_key FROM offline_db.devices WHERE id = $1", tx.PayerID).Scan(&publicKeyHex)
+	if err != nil {
+		log.Printf("Device not found or DB error: %s", tx.PayerID)
+		return fmt.Sprintf("device_not_found:%s", tx.PayerID)
+	}
+
+	// Verify signature
+	if !verifySignature(tx, publicKeyHex) {
+		log.Printf("Invalid signature for tx from %s", tx.PayerID)
+		return fmt.Sprintf("invalid_signature:%s", tx.PayerID)
+	}
+
+	// Optional: Verify on Ganache (ecrecover equivalent)
+	if s.ganache != nil {
+		if err := s.ganache.VerifyOfflineTransaction(tx); err != nil {
+			log.Printf("Ganache verification failed: %v", err)
+			// Non-blocking for now, Ed25519 is primary
+		}
+	}
+
+	// 2. Risk Controls
+	// 2a. Transaction Limit
+	if tx.Amount > MaxTransactionAmount {
+		log.Printf("Transaction amount %d exceeds limit %d", tx.Amount, MaxTransactionAmount)
+		return fmt.Sprintf("amount_exceeded:%d", tx.Amount)
+	}
+
+	// 2b. TTL Check (7 Days)
+	var lastSyncAt time.Time
+	var currentBalance int64
+	err = s.db.QueryRow("SELECT balance, last_sync_at FROM offline_db.purses WHERE device_id = $1", tx.PayerID).
+		Scan(&currentBalance, &lastSyncAt)
+	if err != nil {
+		log.Printf("Purse not found for %s", tx.PayerID)
+		return fmt.Sprintf("purse_not_found:%s", tx.PayerID)
+	}
+
+	if time.Since(lastSyncAt) > time.Duration(SyncTTLDays)*24*time.Hour {
+		log.Printf("Device %s has not synced in %d days. Transaction rejected.", tx.PayerID, SyncTTLDays)
+		return fmt.Sprintf("ttl_expired:%s", tx.PayerID)
+	}
+
+	// 2c. Balance check
+	if currentBalance < tx.Amount {
+		log.Printf("Insufficient shadow balance for %s: has %d, needs %d", tx.PayerID, currentBalance, tx.Amount)
+		return fmt.Sprintf("insufficient_balance:%s", tx.PayerID)
+	}
+
+	// 2d. Double Spend (Used Counters)
+	var exists bool
+	err = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM offline_db.used_counters WHERE device_id = $1 AND counter = $2)",
+		tx.PayerID, tx.Counter).Scan(&exists)
+	if err != nil {
+		log.Printf("DB Error checking counter: %v", err)
+		return "db_error:counter_check"
+	}
+	if exists {
+		log.Printf("FRAUD ALERT: Double spend detected! Device: %s, Counter: %d", tx.PayerID, tx.Counter)
+		// TODO: Flag account for investigation
+		return fmt.Sprintf("double_spend:%s:%d", tx.PayerID, tx.Counter)
+	}
+
+	// 3. Process Transaction
+	// Insert into used_counters
+	_, err = s.db.Exec("INSERT INTO offline_db.used_counters (device_id, counter, tx_hash, created_at) VALUES ($1, $2, $3, $4)",
+		tx.PayerID, tx.Counter, "hash-"+tx.Signature[:16], time.Now())
+	if err != nil {
+		log.Printf("Failed to record counter: %v", err)
+		return "db_error:record_counter"
+	}
+
+	// Debit Payer Shadow Balance
+	_, err = s.db.Exec("UPDATE offline_db.purses SET balance = balance - $1 WHERE device_id = $2", tx.Amount, tx.PayerID)
+	if err != nil {
+		log.Printf("Failed to debit shadow balance: %v", err)
+	}
+
+	// Map DeviceID to WalletID
+	var payerUserID string
+	s.db.QueryRow("SELECT user_id FROM offline_db.devices WHERE id = $1", tx.PayerID).Scan(&payerUserID)
+	payerWalletID := "wallet-" + payerUserID
+
+	var payeeUserID string
+	err = s.db.QueryRow("SELECT user_id FROM offline_db.devices WHERE id = $1", tx.PayeeID).Scan(&payeeUserID)
+	if err != nil {
+		payeeUserID = tx.PayeeID // Fallback if PayeeID is already a UserID
+	}
+	payeeWalletID := "wallet-" + payeeUserID
+
+	proof := map[string]interface{}{
+		"from":      payerWalletID,
+		"to":        payeeWalletID,
+		"amount":    tx.Amount,
+		"nonce":     tx.Counter,
+		"signature": tx.Signature,
+	}
+	*validProofs = append(*validProofs, proof)
+
+	// Credit payee's wallet in local DB (optimistic)
+	_, err = s.db.Exec("UPDATE wallet_db.wallets SET balance = balance + $1 WHERE id = $2", tx.Amount, payeeWalletID)
+	if err != nil {
+		log.Printf("Failed to update local wallet balance: %v", err)
+	}
+
+	return "" // Success
 }
 
 func verifySignature(tx models.SignedPayment, pubKeyHex string) bool {
@@ -364,34 +419,8 @@ func verifySignature(tx models.SignedPayment, pubKeyHex string) bool {
 		return false
 	}
 
-	// Reconstruct message: The Intent JSON string is what was signed
+	// The Intent JSON string is what was signed
 	msg := []byte(tx.Intent)
 
 	return ed25519.Verify(pubKey, msg, sig)
-}
-
-func main() {
-	cfg := common.LoadConfig()
-
-	// Connect to DB
-	database, err := db.Connect(cfg.DB)
-	if err != nil {
-		log.Fatalf("Failed to connect to DB: %v", err)
-	}
-	defer database.Close()
-
-	// Run Migrations
-	if err := migrations.RunMigrations(database, "backend/migrations/offline"); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
-	}
-
-	svc := &Service{db: database}
-
-	r := mux.NewRouter()
-	r.HandleFunc("/offline/device", svc.RegisterDeviceHandler).Methods("POST")
-	r.HandleFunc("/offline/fund", svc.FundPurseHandler).Methods("POST") // Replaces RequestPurse
-	r.HandleFunc("/offline/reconcile", svc.ReconcileHandler).Methods("POST")
-
-	log.Printf("Offline Service running on :%s", cfg.Port)
-	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
 }
