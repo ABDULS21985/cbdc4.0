@@ -1,0 +1,29 @@
+{
+  "name": "cbdc-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "citizen-wallet-app",
+    "cbn-console",
+    "merchant-portal",
+    "intermediary-portal"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:wallet": "npm run dev -w @cbdc/citizen-wallet-app",
+    "dev:console": "npm run dev -w @cbdc/cbn-console",
+    "dev:merchant": "npm run dev -w @cbdc/merchant-portal",
+    "dev:intermediary": "npm run dev -w @cbdc/intermediary-portal",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "clean": "rm -rf node_modules */node_modules */.next"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

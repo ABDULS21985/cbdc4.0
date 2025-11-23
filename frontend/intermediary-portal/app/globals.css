@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --foreground-rgb: 0, 0, 0;
+    --background-rgb: 249, 250, 251;
+}
+
+body {
+    color: rgb(var(--foreground-rgb));
+    background: rgb(var(--background-rgb));
+}
+
+/* Intermediary portal specific styles */
+.portal-card {
+    @apply bg-white rounded-xl shadow-sm border overflow-hidden;
+}
+
+.portal-card-header {
+    @apply p-4 border-b bg-gray-50;
+}
+
+.portal-card-body {
+    @apply p-6;
+}
+
+/* KYC Document viewer */
+.document-preview {
+    @apply border rounded-lg p-4 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors;
+}
+
+/* Stats grid */
+.stats-grid {
+    @apply grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4;
+}
+
+.stat-item {
+    @apply bg-white rounded-xl p-5 shadow-sm border;
+}
+
+/* Table hover row */
+.table-row-hover {
+    @apply hover:bg-gray-50 transition-colors;
+}
+
+@keyframes slide-in-right {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.animate-slide-in-right {
+    animation: slide-in-right 0.3s ease-out;
+}

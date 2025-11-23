@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --foreground-rgb: 0, 0, 0;
+    --background-rgb: 249, 250, 251;
+}
+
+body {
+    color: rgb(var(--foreground-rgb));
+    background: rgb(var(--background-rgb));
+}
+
+/* Merchant portal specific styles */
+.merchant-card {
+    @apply bg-white rounded-xl shadow-sm border p-6 transition-all hover:shadow-md;
+}
+
+/* QR Code display */
+.qr-container {
+    @apply bg-white p-4 rounded-lg shadow-inner inline-block;
+}
+
+/* Transaction list */
+.transaction-item {
+    @apply flex items-center justify-between p-4 hover:bg-gray-50 transition-colors;
+}
+
+@keyframes pulse-green {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 10px rgba(34, 197, 94, 0);
+    }
+}
+
+.pulse-success {
+    animation: pulse-green 2s infinite;
+}

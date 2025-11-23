@@ -15,6 +15,7 @@ resources:
   - cbn-ops-service.yaml
   - rtgs-adapter.yaml
   - ingress.yaml
+  - monitoring.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: cbdc-platform
