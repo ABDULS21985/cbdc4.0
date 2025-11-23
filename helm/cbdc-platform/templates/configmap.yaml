@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cbdc-platform.fullname" . }}-config
+  labels:
+    {{- include "cbdc-platform.labels" . | nindent 4 }}
+data:
+  # Fabric Configuration
+  FABRIC_PEER_ADDRESS: {{ .Values.fabric.peerAddress | quote }}
+  FABRIC_CHANNEL_NAME: {{ .Values.fabric.channelName | quote }}
+  FABRIC_CHAINCODE_NAME: {{ .Values.fabric.chaincodeName | quote }}
+  FABRIC_MSP_ID: {{ .Values.fabric.mspId | quote }}
+
+  # Service URLs
+  WALLET_SERVICE_URL: "http://{{ include "cbdc-platform.fullname" . }}-wallet-service:{{ .Values.walletService.service.port }}"
+  PAYMENTS_SERVICE_URL: "http://{{ include "cbdc-platform.fullname" . }}-payments-service:{{ .Values.paymentsService.service.port }}"
+  OFFLINE_SERVICE_URL: "http://{{ include "cbdc-platform.fullname" . }}-offline-service:{{ .Values.offlineService.service.port }}"
+  CBN_OPS_SERVICE_URL: "http://{{ include "cbdc-platform.fullname" . }}-cbn-ops-service:{{ .Values.cbnOpsService.service.port }}"
+  RTGS_ADAPTER_URL: "http://{{ include "cbdc-platform.fullname" . }}-rtgs-adapter:{{ .Values.rtgsAdapter.service.port }}"
+
+  # Ganache Configuration
+  {{- if .Values.ganache.enabled }}
+  GANACHE_RPC_URL: "http://{{ include "cbdc-platform.fullname" . }}-ganache:{{ .Values.ganache.service.port }}"
+  {{- end }}
+
+  # Database Configuration
+  {{- if .Values.postgresql.enabled }}
+  DB_HOST: "{{ include "cbdc-platform.fullname" . }}-postgresql"
+  DB_PORT: "5432"
+  DB_NAME: {{ .Values.postgresql.auth.database | quote }}
+  {{- end }}
+
+  # Risk Control Parameters
+  MAX_OFFLINE_BALANCE: {{ .Values.riskControls.maxOfflineBalance | quote }}
+  MAX_OFFLINE_TX_AMOUNT: {{ .Values.riskControls.maxOfflineTxAmount | quote }}
+  SYNC_TTL_DAYS: {{ .Values.riskControls.syncTtlDays | quote }}
+
+  # Tier Limits
+  TIER0_DAILY_LIMIT: {{ .Values.tierLimits.tier0.dailyLimit | quote }}
+  TIER0_BALANCE_LIMIT: {{ .Values.tierLimits.tier0.balanceLimit | quote }}
+  TIER1_DAILY_LIMIT: {{ .Values.tierLimits.tier1.dailyLimit | quote }}
+  TIER1_BALANCE_LIMIT: {{ .Values.tierLimits.tier1.balanceLimit | quote }}
+  TIER2_DAILY_LIMIT: {{ .Values.tierLimits.tier2.dailyLimit | quote }}
+  TIER2_BALANCE_LIMIT: {{ .Values.tierLimits.tier2.balanceLimit | quote }}

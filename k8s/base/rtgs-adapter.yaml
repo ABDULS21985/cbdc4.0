@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rtgs-adapter
+  namespace: cbdc-platform
+  labels:
+    app: rtgs-adapter
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rtgs-adapter
+  template:
+    metadata:
+      labels:
+        app: rtgs-adapter
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8085"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: rtgs-adapter
+          image: cbdc/rtgs-adapter:latest
+          ports:
+            - containerPort: 8085
+              name: http
+          envFrom:
+            - configMapRef:
+                name: cbdc-config
+            - secretRef:
+                name: cbdc-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8085
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8085
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: fabric-certs
+          secret:
+            secretName: fabric-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rtgs-adapter
+  namespace: cbdc-platform
+  labels:
+    app: rtgs-adapter
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8085
+      targetPort: 8085
+      protocol: TCP
+      name: http
+  selector:
+    app: rtgs-adapter

@@ -1,0 +1,87 @@
+{{- $services := list "wallet-service" "payments-service" "offline-service" "cbn-ops-service" "rtgs-adapter" }}
+{{- range $service := $services }}
+{{- $serviceKey := $service | replace "-" "" | camelcase }}
+{{- $serviceConfig := index $.Values (printf "%sService" (trimSuffix "Service" $serviceKey)) | default (index $.Values $serviceKey) }}
+{{- if and $serviceConfig $serviceConfig.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cbdc-platform.fullname" $ }}-{{ $service }}
+  labels:
+    {{- include "cbdc-platform.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $service }}
+spec:
+  replicas: {{ $serviceConfig.replicaCount | default 2 }}
+  selector:
+    matchLabels:
+      {{- include "cbdc-platform.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $service }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $serviceConfig.service.port | quote }}
+        prometheus.io/path: "/metrics"
+      labels:
+        {{- include "cbdc-platform.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $service }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cbdc-platform.serviceAccountName" $ }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $service }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          image: "{{ $serviceConfig.image.repository }}:{{ $serviceConfig.image.tag | default $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $serviceConfig.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "cbdc-platform.fullname" $ }}-config
+            - secretRef:
+                name: {{ include "cbdc-platform.fullname" $ }}-secrets
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $serviceConfig.resources | nindent 12 }}
+          volumeMounts:
+            - name: fabric-certs
+              mountPath: /etc/fabric/certs
+              readOnly: true
+      volumes:
+        - name: fabric-certs
+          secret:
+            secretName: {{ $.Values.fabric.certSecret }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

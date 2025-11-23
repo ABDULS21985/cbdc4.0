@@ -1,0 +1,255 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+env:
+  GO_VERSION: '1.21'
+  NODE_VERSION: '18'
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+jobs:
+  # Lint and test Go backend services
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - wallet-service
+          - payments-service
+          - offline-service
+          - cbn-ops-service
+          - rtgs-adapter
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/services/${{ matrix.service }}/go.sum
+
+      - name: Install dependencies
+        working-directory: backend/services/${{ matrix.service }}
+        run: go mod download
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          working-directory: backend/services/${{ matrix.service }}
+
+      - name: Run tests
+        working-directory: backend/services/${{ matrix.service }}
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: backend/services/${{ matrix.service }}/coverage.out
+          flags: ${{ matrix.service }}
+
+  # Test chaincode
+  chaincode-test:
+    name: Chaincode Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/chaincode/cbdc-core/go.sum
+
+      - name: Install dependencies
+        working-directory: backend/chaincode/cbdc-core
+        run: go mod download
+
+      - name: Run chaincode tests
+        working-directory: backend/chaincode/cbdc-core
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: backend/chaincode/cbdc-core/coverage.out
+          flags: chaincode
+
+  # Test and lint frontend applications
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app:
+          - citizen-wallet-app
+          - cbn-console
+          - merchant-portal
+          - intermediary-portal
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/${{ matrix.app }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend/${{ matrix.app }}
+        run: npm ci
+        continue-on-error: true
+
+      - name: Run ESLint
+        working-directory: frontend/${{ matrix.app }}
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Run tests
+        working-directory: frontend/${{ matrix.app }}
+        run: npm test -- --passWithNoTests
+        continue-on-error: true
+
+      - name: Build
+        working-directory: frontend/${{ matrix.app }}
+        run: npm run build
+        continue-on-error: true
+
+  # Security scanning
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt sarif -out gosec-results.sarif ./backend/...'
+        continue-on-error: true
+
+  # Build Docker images
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [backend-test, chaincode-test]
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        service:
+          - wallet-service
+          - payments-service
+          - offline-service
+          - cbn-ops-service
+          - rtgs-adapter
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: backend/services/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Build frontend images
+  build-frontend:
+    name: Build Frontend Images
+    runs-on: ubuntu-latest
+    needs: [frontend-test]
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        app:
+          - citizen-wallet-app
+          - cbn-console
+          - merchant-portal
+          - intermediary-portal
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.app }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: frontend/${{ matrix.app }}
+          file: frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            APP_NAME=${{ matrix.app }}

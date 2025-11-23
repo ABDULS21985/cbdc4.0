@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cbdc-platform
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secrets.yaml
+  - postgres.yaml
+  - ganache.yaml
+  - wallet-service.yaml
+  - payments-service.yaml
+  - offline-service.yaml
+  - cbn-ops-service.yaml
+  - rtgs-adapter.yaml
+  - ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: cbdc-platform
+  app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: cbdc/wallet-service
+    newTag: latest
+  - name: cbdc/payments-service
+    newTag: latest
+  - name: cbdc/offline-service
+    newTag: latest
+  - name: cbdc/cbn-ops-service
+    newTag: latest
+  - name: cbdc/rtgs-adapter
+    newTag: latest

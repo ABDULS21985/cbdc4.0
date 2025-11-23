@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cbn-ops-service
+  namespace: cbdc-platform
+  labels:
+    app: cbn-ops-service
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cbn-ops-service
+  template:
+    metadata:
+      labels:
+        app: cbn-ops-service
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8084"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: cbn-ops-service
+          image: cbdc/cbn-ops-service:latest
+          ports:
+            - containerPort: 8084
+              name: http
+          envFrom:
+            - configMapRef:
+                name: cbdc-config
+            - secretRef:
+                name: cbdc-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8084
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8084
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: fabric-certs
+              mountPath: /etc/fabric/certs
+              readOnly: true
+      volumes:
+        - name: fabric-certs
+          secret:
+            secretName: fabric-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cbn-ops-service
+  namespace: cbdc-platform
+  labels:
+    app: cbn-ops-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8084
+      targetPort: 8084
+      protocol: TCP
+      name: http
+  selector:
+    app: cbn-ops-service

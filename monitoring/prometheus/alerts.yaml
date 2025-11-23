@@ -1,0 +1,172 @@
+groups:
+  - name: cbdc-platform-alerts
+    rules:
+      # High Error Rate
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+          /
+          sum(rate(http_requests_total[5m])) by (service)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected in {{ $labels.service }}"
+          description: "Error rate is above 5% for {{ $labels.service }} (current: {{ $value | humanizePercentage }})"
+
+      # Service Down
+      - alert: ServiceDown
+        expr: up{job=~"cbdc-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CBDC service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 2 minutes"
+
+      # High Latency
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
+          > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected in {{ $labels.service }}"
+          description: "95th percentile latency is above 2 seconds for {{ $labels.service }}"
+
+      # Payment Processing Errors
+      - alert: PaymentProcessingErrors
+        expr: |
+          sum(rate(payment_processing_errors_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Payment processing errors detected"
+          description: "Payment errors are occurring at a rate of {{ $value }}/sec"
+
+      # Offline Sync Failures
+      - alert: OfflineSyncFailures
+        expr: |
+          sum(rate(offline_sync_failures_total[15m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Offline sync failures detected"
+          description: "Offline transactions are failing to sync at {{ $value }}/sec"
+
+      # Double Spend Attempts
+      - alert: DoubleSpendAttempts
+        expr: |
+          sum(rate(double_spend_attempts_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Double spend attempts detected"
+          description: "{{ $value }} double spend attempts detected in the last 5 minutes"
+
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: |
+          container_memory_usage_bytes{namespace="cbdc-platform"}
+          /
+          container_spec_memory_limit_bytes{namespace="cbdc-platform"}
+          > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage in {{ $labels.pod }}"
+          description: "Memory usage is above 85% for {{ $labels.pod }}"
+
+      # Pod Restart
+      - alert: PodRestarting
+        expr: |
+          rate(kube_pod_container_status_restarts_total{namespace="cbdc-platform"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} is restarting"
+          description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes"
+
+      # Database Connection Issues
+      - alert: DatabaseConnectionIssues
+        expr: |
+          pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "Cannot connect to PostgreSQL database"
+
+      # Low Disk Space
+      - alert: LowDiskSpace
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"}
+          /
+          node_filesystem_size_bytes{mountpoint="/"})
+          < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk space is below 15% on {{ $labels.instance }}"
+
+      # Fabric Peer Connectivity
+      - alert: FabricPeerDisconnected
+        expr: |
+          fabric_peer_connected == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Hyperledger Fabric peer disconnected"
+          description: "Cannot connect to Fabric peer. Blockchain operations will fail."
+
+      # Transaction Volume Spike
+      - alert: TransactionVolumeSpike
+        expr: |
+          sum(rate(transactions_total[5m]))
+          >
+          sum(rate(transactions_total[1h] offset 1d)) * 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual transaction volume spike"
+          description: "Transaction volume is 3x higher than the same time yesterday"
+
+  - name: cbdc-sla-alerts
+    rules:
+      # SLA: 99.9% Uptime
+      - alert: SLABreach
+        expr: |
+          (1 - (sum(increase(http_requests_total{status=~"5.."}[30d]))
+          /
+          sum(increase(http_requests_total[30d])))) < 0.999
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SLA breach detected"
+          description: "Service availability has dropped below 99.9% SLA target"
+
+      # Response Time SLA
+      - alert: ResponseTimeSLABreach
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[1h])) by (le))
+          > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Response time SLA breach"
+          description: "99th percentile response time exceeds 1 second SLA target"

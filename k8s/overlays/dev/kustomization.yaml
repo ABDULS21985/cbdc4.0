@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cbdc-dev
+
+resources:
+  - ../../base
+
+nameSuffix: -dev
+
+commonLabels:
+  environment: development
+
+patches:
+  # Reduce replicas for dev
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+    target:
+      kind: Deployment
+      name: ".*"
+  # Reduce resource limits for dev
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 250m
+    target:
+      kind: Deployment
+      name: ".*"
+
+configMapGenerator:
+  - name: cbdc-config
+    behavior: merge
+    literals:
+      - FABRIC_PEER_ADDRESS=peer0.org1.dev.local:7051
+      - GANACHE_RPC_URL=http://ganache-dev:8545
+
+secretGenerator:
+  - name: cbdc-secrets
+    behavior: merge
+    literals:
+      - DB_PASSWORD=dev_password_123
+      - JWT_SECRET=dev_jwt_secret_123

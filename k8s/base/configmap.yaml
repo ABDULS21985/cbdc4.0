@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cbdc-config
+  namespace: cbdc-platform
+data:
+  # Fabric Configuration
+  FABRIC_PEER_ADDRESS: "peer0.org1.example.com:7051"
+  FABRIC_CHANNEL_NAME: "cbdc-channel"
+  FABRIC_CHAINCODE_NAME: "cbdc-core"
+
+  # Service URLs (internal)
+  WALLET_SERVICE_URL: "http://wallet-service:8081"
+  PAYMENTS_SERVICE_URL: "http://payments-service:8082"
+  OFFLINE_SERVICE_URL: "http://offline-service:8083"
+  CBN_OPS_SERVICE_URL: "http://cbn-ops-service:8084"
+  RTGS_ADAPTER_URL: "http://rtgs-adapter:8085"
+
+  # Ganache Configuration
+  GANACHE_RPC_URL: "http://ganache:8545"
+  GANACHE_CONTRACT_ADDRESS: "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+
+  # Database Configuration
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "cbdc"
+
+  # Risk Control Parameters
+  MAX_OFFLINE_BALANCE: "50000"
+  MAX_OFFLINE_TX_AMOUNT: "5000"
+  SYNC_TTL_DAYS: "7"
+
+  # Tier Limits (in kobo)
+  TIER0_DAILY_LIMIT: "5000000"
+  TIER0_BALANCE_LIMIT: "30000000"
+  TIER1_DAILY_LIMIT: "20000000"
+  TIER1_BALANCE_LIMIT: "50000000"
+  TIER2_DAILY_LIMIT: "100000000"
+  TIER2_BALANCE_LIMIT: "500000000"

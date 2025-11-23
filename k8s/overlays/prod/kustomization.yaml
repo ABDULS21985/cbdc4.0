@@ -1,0 +1,63 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cbdc-prod
+
+resources:
+  - ../../base
+  - network-policies.yaml
+  - pod-disruption-budgets.yaml
+
+nameSuffix: -prod
+
+commonLabels:
+  environment: production
+
+commonAnnotations:
+  prometheus.io/scrape: "true"
+
+patches:
+  # Increase replicas for production
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+    target:
+      kind: Deployment
+      name: wallet-service
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+    target:
+      kind: Deployment
+      name: payments-service
+  # Production resource limits
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 1000m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+    target:
+      kind: Deployment
+      name: ".*"
+
+images:
+  - name: cbdc/wallet-service
+    newTag: v1.0.0
+  - name: cbdc/payments-service
+    newTag: v1.0.0
+  - name: cbdc/offline-service
+    newTag: v1.0.0
+  - name: cbdc/cbn-ops-service
+    newTag: v1.0.0
+  - name: cbdc/rtgs-adapter
+    newTag: v1.0.0

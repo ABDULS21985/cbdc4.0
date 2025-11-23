@@ -1,0 +1,54 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wallet-service-pdb
+  namespace: cbdc-prod
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: wallet-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payments-service-pdb
+  namespace: cbdc-prod
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: payments-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: offline-service-pdb
+  namespace: cbdc-prod
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: offline-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cbn-ops-service-pdb
+  namespace: cbdc-prod
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cbn-ops-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: cbdc-prod
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgres

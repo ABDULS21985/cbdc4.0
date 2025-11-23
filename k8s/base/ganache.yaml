@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ganache
+  namespace: cbdc-platform
+  labels:
+    app: ganache
+    tier: blockchain
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ganache
+  template:
+    metadata:
+      labels:
+        app: ganache
+        tier: blockchain
+    spec:
+      containers:
+        - name: ganache
+          image: trufflesuite/ganache:latest
+          args:
+            - "--chain.chainId=1337"
+            - "--miner.blockGasLimit=30000000"
+            - "--wallet.deterministic=true"
+            - "--database.dbPath=/data"
+          ports:
+            - containerPort: 8545
+              name: rpc
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: ganache-data
+              mountPath: /data
+          livenessProbe:
+            tcpSocket:
+              port: 8545
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 8545
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: ganache-data
+          persistentVolumeClaim:
+            claimName: ganache-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ganache-data-pvc
+  namespace: cbdc-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ganache
+  namespace: cbdc-platform
+  labels:
+    app: ganache
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8545
+      targetPort: 8545
+      protocol: TCP
+      name: rpc
+  selector:
+    app: ganache

@@ -1,0 +1,24 @@
+{{- $services := dict "walletService" "wallet-service" "paymentsService" "payments-service" "offlineService" "offline-service" "cbnOpsService" "cbn-ops-service" "rtgsAdapter" "rtgs-adapter" }}
+{{- range $key, $name := $services }}
+{{- $config := index $.Values $key }}
+{{- if and $config $config.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cbdc-platform.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "cbdc-platform.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  type: {{ $config.service.type | default "ClusterIP" }}
+  ports:
+    - port: {{ $config.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "cbdc-platform.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+{{- end }}
+{{- end }}

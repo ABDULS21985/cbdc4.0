@@ -1,0 +1,229 @@
+# Default values for cbdc-platform
+
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# Namespace configuration
+namespace: cbdc-platform
+
+# Common image settings
+image:
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# Wallet Service
+walletService:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: cbdc/wallet-service
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8081
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# Payments Service
+paymentsService:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: cbdc/payments-service
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8082
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 15
+    targetCPUUtilizationPercentage: 70
+
+# Offline Service
+offlineService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: cbdc/offline-service
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8083
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# CBN Ops Service
+cbnOpsService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: cbdc/cbn-ops-service
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8084
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# RTGS Adapter
+rtgsAdapter:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: cbdc/rtgs-adapter
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8085
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+# Ganache (for offline signature verification)
+ganache:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: trufflesuite/ganache
+    tag: "latest"
+  service:
+    type: ClusterIP
+    port: 8545
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# PostgreSQL
+postgresql:
+  enabled: true
+  auth:
+    username: cbdc_user
+    password: ""
+    database: cbdc
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+# Fabric Configuration
+fabric:
+  peerAddress: "peer0.org1.example.com:7051"
+  channelName: "cbdc-channel"
+  chaincodeName: "cbdc-core"
+  mspId: "Org1MSP"
+  certSecret: "fabric-certs"
+
+# Risk Control Parameters
+riskControls:
+  maxOfflineBalance: 50000
+  maxOfflineTxAmount: 5000
+  syncTtlDays: 7
+
+# Tier Limits (in kobo)
+tierLimits:
+  tier0:
+    dailyLimit: 5000000
+    balanceLimit: 30000000
+  tier1:
+    dailyLimit: 20000000
+    balanceLimit: 50000000
+  tier2:
+    dailyLimit: 100000000
+    balanceLimit: 500000000
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: api.enaira.gov.ng
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: cbdc-tls-secret
+      hosts:
+        - api.enaira.gov.ng
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod Security Context
+podSecurityContext:
+  fsGroup: 1000
+
+# Security Context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+
+# Node Selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
