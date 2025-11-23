@@ -58,6 +58,17 @@ func (c *Client) EvaluateTransaction(name string, args ...string) ([]byte, error
 	return c.contract.EvaluateTransaction(name, args...)
 }
 
+func (c *Client) RegisterChaincodeEventListener(eventName string) (<-chan *gateway.ChaincodeEvent, error) {
+	reg, notifier, err := c.contract.RegisterEvent(eventName)
+	if err != nil {
+		return nil, err
+	}
+	// Note: In a real app we'd need to manage unregistration.
+	// For now we return the channel.
+	_ = reg
+	return notifier, nil
+}
+
 func (c *Client) Close() {
 	c.gw.Close()
 }

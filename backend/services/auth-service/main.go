@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
+	"github.com/centralbank/cbdc/backend/pkg/common/api"
 	"github.com/centralbank/cbdc/backend/pkg/common/db"
 	"github.com/centralbank/cbdc/backend/pkg/common/migrations"
 	"github.com/centralbank/cbdc/backend/services/auth-service/models"
@@ -25,19 +26,18 @@ type Service struct {
 func (s *Service) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "Invalid request body", "")
 		return
 	}
 
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal_error", "Failed to hash password", "")
 		return
 	}
 
 	// Insert User
-	// ID generation: simple UUID-like or username based for now
 	userID := "user-" + req.Username
 
 	_, err = s.db.Exec(`
@@ -48,18 +48,17 @@ func (s *Service) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("Failed to register user: %v", err)
-		http.Error(w, "Failed to register user (username/email/phone might be taken)", http.StatusConflict)
+		api.WriteError(w, http.StatusConflict, "user_exists", "Username, email, or phone already exists", "")
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"user_id": userID, "status": "created"})
+	api.WriteSuccess(w, http.StatusCreated, map[string]string{"user_id": userID, "status": "created"})
 }
 
 func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "Invalid request body", "")
 		return
 	}
 
@@ -71,22 +70,22 @@ func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		Scan(&user.ID, &user.PasswordHash, &user.Role, &user.Tier, &user.Status)
 
 	if err == sql.ErrNoRows {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "Invalid username or password", "")
 		return
 	} else if err != nil {
 		log.Printf("DB Error: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal_error", "Database error", "")
 		return
 	}
 
 	if user.Status != "ACTIVE" {
-		http.Error(w, "Account is not active", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "account_inactive", "Account is not active", "")
 		return
 	}
 
 	// Verify Password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "Invalid username or password", "")
 		return
 	}
 
@@ -110,16 +109,14 @@ func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(secretKey)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal_error", "Failed to generate token", "")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.TokenResponse{Token: tokenString, ExpiresAt: expirationTime.Unix()})
+	api.WriteSuccess(w, http.StatusOK, models.TokenResponse{Token: tokenString, ExpiresAt: expirationTime.Unix()})
 }
 
 func (s *Service) RefreshHandler(w http.ResponseWriter, r *http.Request) {
-	// Extract current token from header
 	tokenString := r.Header.Get("Authorization")
 	if len(tokenString) > 7 && tokenString[:7] == "Bearer " {
 		tokenString = tokenString[7:]
@@ -131,7 +128,7 @@ func (s *Service) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil || !token.Valid {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired token", "")
 		return
 	}
 
@@ -142,18 +139,17 @@ func (s *Service) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	newTokenString, err := newToken.SignedString(secretKey)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal_error", "Failed to refresh token", "")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.TokenResponse{Token: newTokenString, ExpiresAt: expirationTime.Unix()})
+	api.WriteSuccess(w, http.StatusOK, models.TokenResponse{Token: newTokenString, ExpiresAt: expirationTime.Unix()})
 }
 
 func (s *Service) VerifyHandler(w http.ResponseWriter, r *http.Request) {
 	tokenString := r.Header.Get("Authorization")
 	if tokenString == "" {
-		http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "missing_token", "Missing Authorization header", "")
 		return
 	}
 	if len(tokenString) > 7 && tokenString[:7] == "Bearer " {
@@ -166,12 +162,11 @@ func (s *Service) VerifyHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil || !token.Valid {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired token", "")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	api.WriteSuccess(w, http.StatusOK, map[string]interface{}{
 		"valid":    true,
 		"user_id":  claims.UserID,
 		"username": claims.Username,

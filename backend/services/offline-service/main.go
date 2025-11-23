@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
+	"github.com/centralbank/cbdc/backend/pkg/common/api"
 	"github.com/centralbank/cbdc/backend/pkg/common/db"
 	"github.com/centralbank/cbdc/backend/pkg/common/migrations"
 	"github.com/centralbank/cbdc/backend/services/offline-service/models"
@@ -23,7 +24,7 @@ type Service struct {
 func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.RegisterDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "Invalid request body", "")
 		return
 	}
 
@@ -38,12 +39,11 @@ func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) 
 
 	if err != nil {
 		log.Printf("Failed to register device: %v", err)
-		http.Error(w, "Failed to register device", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to register device", "")
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "registered", "device_id": deviceID})
+	api.WriteSuccess(w, http.StatusCreated, map[string]string{"status": "registered", "device_id": deviceID})
 }
 
 func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
@@ -65,12 +65,11 @@ func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("Failed to create voucher: %v", err)
-		http.Error(w, "Failed to issue purse", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to issue purse", "")
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	api.WriteSuccess(w, http.StatusCreated, map[string]interface{}{
 		"purse_id":   voucherID,
 		"limit":      amount,
 		"signature":  signature,
@@ -81,7 +80,7 @@ func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.ReconcileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "Invalid request body", "")
 		return
 	}
 
@@ -105,8 +104,7 @@ func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: Submit net settlement to Fabric via Payments Service or direct SDK
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	api.WriteSuccess(w, http.StatusOK, map[string]interface{}{
 		"status":      "processed",
 		"valid_count": validCount,
 	})

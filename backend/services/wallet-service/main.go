@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
+	"github.com/centralbank/cbdc/backend/pkg/common/api"
 	"github.com/centralbank/cbdc/backend/pkg/common/db"
 	"github.com/centralbank/cbdc/backend/pkg/common/migrations"
 	"github.com/centralbank/cbdc/backend/pkg/fabricclient"
@@ -22,7 +23,7 @@ type Service struct {
 func (s *Service) CreateWalletHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateWalletRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "Invalid request body", "")
 		return
 	}
 
@@ -41,7 +42,7 @@ func (s *Service) CreateWalletHandler(w http.ResponseWriter, r *http.Request) {
 	_, err := s.fabric.SubmitTransaction("CreateWallet", walletID, req.UserID, "BankConsortiumMSP", req.Tier)
 	if err != nil {
 		log.Printf("Failed to create wallet on chain: %v", err)
-		http.Error(w, "Failed to create wallet", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "chain_error", "Failed to create wallet on chain", "")
 		return
 	}
 
@@ -61,12 +62,11 @@ func (s *Service) CreateWalletHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("Failed to save wallet to DB: %v", err)
-		http.Error(w, "Failed to save wallet metadata", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "db_error", "Failed to save wallet metadata", "")
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"wallet_id": walletID, "status": "created"})
+	api.WriteSuccess(w, http.StatusCreated, map[string]string{"wallet_id": walletID, "status": "created"})
 }
 
 func (s *Service) GetWalletHandler(w http.ResponseWriter, r *http.Request) {
@@ -82,10 +82,10 @@ func (s *Service) GetWalletHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "Wallet not found", http.StatusNotFound)
+			api.WriteError(w, http.StatusNotFound, "wallet_not_found", "Wallet not found", "")
 		} else {
 			log.Printf("DB Error: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			api.WriteError(w, http.StatusInternalServerError, "internal_error", "Database error", "")
 		}
 		return
 	}
@@ -101,8 +101,7 @@ func (s *Service) GetWalletHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(wallet)
+	api.WriteSuccess(w, http.StatusOK, wallet)
 }
 
 func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +111,7 @@ func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	// Call Fabric to get state
 	result, err := s.fabric.EvaluateTransaction("GetWallet", id)
 	if err != nil {
-		http.Error(w, "Wallet not found", http.StatusNotFound)
+		api.WriteError(w, http.StatusNotFound, "wallet_not_found", "Wallet not found on chain", "")
 		return
 	}
 
@@ -120,12 +119,11 @@ func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
 		Balance int64 `json:"balance"`
 	}
 	if err := json.Unmarshal(result, &wallet); err != nil {
-		http.Error(w, "Failed to parse wallet data", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "data_error", "Failed to parse chain data", "")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.WalletBalance{Balance: wallet.Balance, Currency: "NGN"})
+	api.WriteSuccess(w, http.StatusOK, models.WalletBalance{Balance: wallet.Balance, Currency: "NGN"})
 }
 
 func main() {
