@@ -59,6 +59,30 @@ func (s *Service) GetWalletHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(result)
 }
 
+func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	// Call Fabric to get state (Reuse GetWallet or specific GetBalance if chaincode had it)
+	// Since chaincode GetWallet returns the balance, we can reuse it and filter.
+	result, err := s.fabric.EvaluateTransaction("GetWallet", id)
+	if err != nil {
+		http.Error(w, "Wallet not found", http.StatusNotFound)
+		return
+	}
+
+	var wallet struct {
+		Balance int64 `json:"balance"`
+	}
+	if err := json.Unmarshal(result, &wallet); err != nil {
+		http.Error(w, "Failed to parse wallet data", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int64{"balance": wallet.Balance})
+}
+
 func main() {
 	cfg := common.LoadConfig()
 
@@ -81,6 +105,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/wallets", svc.CreateWalletHandler).Methods("POST")
 	r.HandleFunc("/wallets/{id}", svc.GetWalletHandler).Methods("GET")
+	r.HandleFunc("/wallets/{id}/balance", svc.GetBalanceHandler).Methods("GET")
 
 	log.Printf("Wallet Service running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))

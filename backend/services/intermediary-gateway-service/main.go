@@ -58,6 +58,18 @@ func (s *GatewayService) InitiateTransferHandler(w http.ResponseWriter, r *http.
 	})
 }
 
+// WebhookDeliveryStub simulates sending a webhook to a bank
+func (s *GatewayService) WebhookDeliveryStub(w http.ResponseWriter, r *http.Request) {
+	// This endpoint simulates the Gateway *receiving* a trigger to send a webhook
+	// In production, this would be an internal event listener
+	
+	log.Println("Simulating Webhook Delivery to Bank System...")
+	// Logic to POST to Bank's registered URL would go here
+	
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "webhook_delivered"})
+}
+
 func main() {
 	cfg := common.LoadConfig()
 	svc := &GatewayService{}
@@ -69,6 +81,7 @@ func main() {
 	r.HandleFunc("/api/v1/onboard", svc.OnboardCustomerHandler).Methods("POST")
 	r.HandleFunc("/api/v1/transfer", svc.InitiateTransferHandler).Methods("POST")
 	r.HandleFunc("/api/v1/kyc/validate", svc.ValidateKYCHandler).Methods("POST")
+	r.HandleFunc("/internal/webhook/trigger", svc.WebhookDeliveryStub).Methods("POST")
 
 	log.Printf("Intermediary Gateway running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))

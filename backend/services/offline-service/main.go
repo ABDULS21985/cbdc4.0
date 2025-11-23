@@ -42,6 +42,19 @@ func RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "registered"})
 }
 
+func RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
+	// Request a new offline purse (signed voucher)
+	// In a real system, this would interact with the Central Bank's signing service
+
+	// Mock response
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"purse_id":  "purse-xyz-789",
+		"limit":     1000,
+		"signature": "mock-signature-from-cbn",
+	})
+}
+
 func ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 	var req ReconcileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -92,6 +105,7 @@ func main() {
 	r := mux.NewRouter()
 
 	r.HandleFunc("/offline/devices", RegisterDeviceHandler).Methods("POST")
+	r.HandleFunc("/offline/purse", RequestPurseHandler).Methods("POST")
 	r.HandleFunc("/offline/reconcile", ReconcileHandler).Methods("POST")
 
 	log.Printf("Offline Service running on :%s", cfg.Port)

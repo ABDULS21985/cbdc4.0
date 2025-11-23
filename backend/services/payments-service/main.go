@@ -83,6 +83,8 @@ func main() {
 	r.HandleFunc("/payments/p2p", svc.TransferHandler).Methods("POST")
 	r.HandleFunc("/payments/merchant", svc.MerchantPaymentHandler).Methods("POST")
 	r.HandleFunc("/payments/batch", svc.BatchTransferHandler).Methods("POST")
+	r.HandleFunc("/payments/{id}", svc.GetTransactionHandler).Methods("GET")
+	r.HandleFunc("/payments/history", svc.GetHistoryHandler).Methods("GET")
 
 	log.Printf("Payments Service running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
@@ -109,4 +111,33 @@ func (s *Service) MerchantPaymentHandler(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(result)
+}
+
+func (s *Service) GetTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	// Call Chaincode
+	result, err := s.fabric.EvaluateTransaction("GetTransaction", id)
+	if err != nil {
+		http.Error(w, "Transaction not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
+}
+
+func (s *Service) GetHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	// In a real implementation, this would query an off-chain DB or Fabric History
+	// For now, we'll return a mock list or empty list
+
+	// Mock response
+	history := []map[string]interface{}{
+		{"id": "tx-1", "amount": 100, "status": "confirmed"},
+		{"id": "tx-2", "amount": 50, "status": "confirmed"},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
 }
