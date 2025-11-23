@@ -30,12 +30,12 @@ contract CBDC is ERC20, Ownable, Pausable {
         _unpause();
     }
 
-    function blacklist(address account) public onlyOwner {
+    function freeze(address account) public onlyOwner {
         isBlacklisted[account] = true;
         emit FundsFrozen(account);
     }
 
-    function unblacklist(address account) public onlyOwner {
+    function unfreeze(address account) public onlyOwner {
         isBlacklisted[account] = false;
         emit FundsUnfrozen(account);
     }
