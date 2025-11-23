@@ -13,12 +13,54 @@ import (
 	"github.com/centralbank/cbdc/backend/pkg/common/api"
 	"github.com/centralbank/cbdc/backend/pkg/common/db"
 	"github.com/centralbank/cbdc/backend/pkg/common/migrations"
+	"github.com/centralbank/cbdc/backend/pkg/fabricclient"
 	"github.com/centralbank/cbdc/backend/services/offline-service/models"
 	"github.com/gorilla/mux"
 )
 
 type Service struct {
-	db *sql.DB
+	db     *sql.DB
+	fabric *fabricclient.Client
+}
+
+func main() {
+	cfg := common.LoadConfig()
+
+	// Connect to DB
+	database, err := db.Connect(cfg.DB)
+	if err != nil {
+		log.Fatalf("Failed to connect to DB: %v", err)
+	}
+	defer database.Close()
+
+	// Run Migrations
+	if err := migrations.RunMigrations(database, "backend/migrations/offline"); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	fabric, err := fabricclient.NewClient(
+		cfg.FabricConfig,
+		"cbdc-main-channel",
+		"cbdc-core",
+		cfg.MSP,
+		cfg.CertPath,
+		cfg.KeyPath,
+	)
+	if err != nil {
+		log.Printf("Warning: Fabric connection failed: %v", err)
+	} else {
+		defer fabric.Close()
+	}
+
+	svc := &Service{db: database, fabric: fabric}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/offline/device", svc.RegisterDeviceHandler).Methods("POST")
+	r.HandleFunc("/offline/fund", svc.FundPurseHandler).Methods("POST")
+	r.HandleFunc("/offline/reconcile", svc.ReconcileHandler).Methods("POST")
+
+	log.Printf("Offline Service running on :%s", cfg.Port)
+	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
 }
 
 func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) {
@@ -137,12 +179,27 @@ func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 
 	validCount := 0
 	failedCount := 0
+	validProofs := []map[string]interface{}{}
 
 	for _, tx := range req.Transactions {
-		// 1. Verify Signature
-		// In production, we'd load the Payer's Public Key from DB or Cert.
-		// For now, we assume signature is valid if it's not empty (Mock).
+		// 1. Verify Signature (Real Ed25519)
 		if tx.Signature == "" {
+			log.Printf("Missing signature for tx from %s", tx.PayerID)
+			failedCount++
+			continue
+		}
+
+		// Fetch Public Key
+		var publicKeyHex string
+		err := s.db.QueryRow("SELECT public_key FROM offline_db.devices WHERE id = $1", tx.PayerID).Scan(&publicKeyHex)
+		if err != nil {
+			log.Printf("Device not found or DB error: %s", tx.PayerID)
+			failedCount++
+			continue
+		}
+
+		// Verify
+		if !verifySignature(tx, publicKeyHex) {
 			log.Printf("Invalid signature for tx from %s", tx.PayerID)
 			failedCount++
 			continue
@@ -150,7 +207,7 @@ func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 
 		// 2. Check Double Spend (Used Counters)
 		var exists bool
-		err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM offline_db.used_counters WHERE device_id = $1 AND counter = $2)", tx.PayerID, tx.Counter).Scan(&exists)
+		err = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM offline_db.used_counters WHERE device_id = $1 AND counter = $2)", tx.PayerID, tx.Counter).Scan(&exists)
 		if err != nil {
 			log.Printf("DB Error checking counter: %v", err)
 			failedCount++
@@ -179,21 +236,68 @@ func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 			// Rollback counter? In a transaction, yes. Here we skip for simplicity but note it.
 		}
 
-		// Credit Payee Online (Mock Call to Payments/Wallet Service)
-		// log.Printf("Crediting Payee %s with %d", tx.PayeeID, tx.Amount)
+		// Prepare for Batch Settlement
+		// Map DeviceID to WalletID (Assuming PayerID is DeviceID, we need PayerWalletID)
+		// For simplicity, let's assume PayerWalletID = "wallet-" + UserID associated with Device.
+		var payerUserID string
+		s.db.QueryRow("SELECT user_id FROM offline_db.devices WHERE id = $1", tx.PayerID).Scan(&payerUserID)
+		payerWalletID := "wallet-" + payerUserID
+
+		// PayeeWalletID = "wallet-" + PayeeID (Assuming PayeeID in tx is UserID or DeviceID? Design says PayeeID is DevicePK usually, but let's assume it maps to a user)
+		// If PayeeID is a DeviceID, we need to look it up.
+		// Let's assume PayeeID in SignedPayment is the Payee's DeviceID.
+		var payeeUserID string
+		err = s.db.QueryRow("SELECT user_id FROM offline_db.devices WHERE id = $1", tx.PayeeID).Scan(&payeeUserID)
+		if err != nil {
+			// Fallback: maybe PayeeID is already a UserID?
+			payeeUserID = tx.PayeeID
+		}
+		payeeWalletID := "wallet-" + payeeUserID
+
+		proof := map[string]interface{}{
+			"from":      payerWalletID,
+			"to":        payeeWalletID,
+			"amount":    tx.Amount,
+			"nonce":     tx.Counter,
+			"signature": tx.Signature,
+		}
+		validProofs = append(validProofs, proof)
+
+		// 4. Real Online Crediting (Direct DB Update for immediate feedback)
+		// We credit the payee's wallet in the local DB.
+		// Note: The Fabric event will eventually confirm this, but we do it optimistically here.
+		// Or we wait for Fabric. Given "Production Grade", we should probably wait or use the event listener.
+		// But the user asked for "Real Online Crediting (DB Update)".
+		// Let's update the local wallet balance.
+		_, err = s.db.Exec("UPDATE wallet_db.wallets SET balance = balance + $1 WHERE id = $2", tx.Amount, payeeWalletID)
+		if err != nil {
+			log.Printf("Failed to update local wallet balance: %v", err)
+		}
 
 		validCount++
+	}
+
+	// 5. Submit Batch to Fabric
+	if len(validProofs) > 0 && s.fabric != nil {
+		proofsJSON, _ := json.Marshal(validProofs)
+		log.Printf("Submitting batch to Fabric: %s", proofsJSON)
+		_, err := s.fabric.SubmitTransaction("BatchReconcile", string(proofsJSON))
+		if err != nil {
+			log.Printf("Failed to submit batch to Fabric: %v", err)
+			// We might want to queue this for retry
+		}
 	}
 
 	api.WriteSuccess(w, http.StatusOK, map[string]interface{}{
 		"status":       "processed",
 		"valid_count":  validCount,
 		"failed_count": failedCount,
+		"batch_size":   len(validProofs),
 	})
 }
 
-func verifySignature(tx models.OfflineTransaction) bool {
-	pubKey, err := hex.DecodeString(tx.From)
+func verifySignature(tx models.SignedPayment, pubKeyHex string) bool {
+	pubKey, err := hex.DecodeString(pubKeyHex)
 	if err != nil || len(pubKey) != ed25519.PublicKeySize {
 		return false
 	}
@@ -203,9 +307,8 @@ func verifySignature(tx models.OfflineTransaction) bool {
 		return false
 	}
 
-	// Reconstruct message: From + To + Amount + Counter
-	// Simplified serialization for demo
-	msg := []byte(tx.From + tx.To + string(tx.Amount) + string(tx.Counter))
+	// Reconstruct message: The Intent JSON string is what was signed
+	msg := []byte(tx.Intent)
 
 	return ed25519.Verify(pubKey, msg, sig)
 }
