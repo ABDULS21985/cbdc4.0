@@ -9,6 +9,26 @@ import (
 	"github.com/gorilla/mux"
 )
 
+type KYCRequest struct {
+	NationalID string `json:"national_id"`
+	Name       string `json:"name"`
+}
+
+func ValidateKYCHandler(w http.ResponseWriter, r *http.Request) {
+	var req KYCRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Stub: Integrate with Legacy Bank System or National ID Database
+	log.Printf("Validating KYC for ID: %s", req.NationalID)
+	
+	// Mock success
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "verified", "risk_level": "low"})
+}
+
 // GatewayService acts as a B2B API for banks
 type GatewayService struct {
 	// In a real app, this would hold clients to internal gRPC services
@@ -46,9 +66,11 @@ func main() {
 
 	// Middleware for API Key check could go here
 
-	r.HandleFunc("/api/v1/customers", svc.OnboardCustomerHandler).Methods("POST")
-	r.HandleFunc("/api/v1/transfers", svc.InitiateTransferHandler).Methods("POST")
+	r.HandleFunc("/api/v1/onboard", svc.OnboardCustomerHandler).Methods("POST")
+	r.HandleFunc("/api/v1/transfer", svc.InitiateTransferHandler).Methods("POST")
+	r.HandleFunc("/api/v1/kyc/validate", svc.ValidateKYCHandler).Methods("POST")
 
-	log.Printf("Intermediary Gateway Service running on :%s", cfg.Port)
+	log.Printf("Intermediary Gateway running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
 }
+```

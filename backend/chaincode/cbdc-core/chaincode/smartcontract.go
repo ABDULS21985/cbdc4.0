@@ -54,6 +54,41 @@ func (s *SmartContract) Issue(ctx contractapi.TransactionContextInterface, toWal
 	return ctx.GetStub().PutState(toWalletID, updatedWalletBytes)
 }
 
+// Redeem burns CBDC from a bank's wallet. Only Central Bank can call this.
+func (s *SmartContract) Redeem(ctx contractapi.TransactionContextInterface, fromWalletID string, amount int64) error {
+	// Check if caller is from Central Bank MSP
+	mspID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get MSP ID: %v", err)
+	}
+	if mspID != "CentralBankMSP" {
+		return fmt.Errorf("unauthorized: only Central Bank can redeem CBDC")
+	}
+
+	walletBytes, err := ctx.GetStub().GetState(fromWalletID)
+	if err != nil {
+		return fmt.Errorf("failed to read wallet: %v", err)
+	}
+	if walletBytes == nil {
+		return fmt.Errorf("wallet %s does not exist", fromWalletID)
+	}
+
+	var wallet Wallet
+	err = json.Unmarshal(walletBytes, &wallet)
+	if err != nil {
+		return err
+	}
+
+	if wallet.Balance < amount {
+		return fmt.Errorf("insufficient funds to redeem")
+	}
+
+	wallet.Balance -= amount
+
+	updatedWalletBytes, _ := json.Marshal(wallet)
+	return ctx.GetStub().PutState(fromWalletID, updatedWalletBytes)
+}
+
 // Transfer moves funds between wallets
 func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, fromWalletID string, toWalletID string, amount int64) error {
 	if amount <= 0 {
