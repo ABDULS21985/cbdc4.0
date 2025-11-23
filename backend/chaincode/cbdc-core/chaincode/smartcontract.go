@@ -41,7 +41,7 @@ func (s *SmartContract) InitLedger(ctx contractapi.TransactionContextInterface) 
 }
 
 // Issue mints new CBDC to a bank's wallet. Only Central Bank can call this.
-func (s *SmartContract) Issue(ctx contractapi.TransactionContextInterface, toWalletID string, amount int64) error {
+func (s *SmartContract) Issue(ctx contractapi.TransactionContextInterface, amount int64, toWalletID string) error {
 	// Check if caller is from Central Bank MSP
 	mspID, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
@@ -91,7 +91,7 @@ func (s *SmartContract) Issue(ctx contractapi.TransactionContextInterface, toWal
 }
 
 // Redeem burns CBDC from a bank's wallet. Only Central Bank can call this.
-func (s *SmartContract) Redeem(ctx contractapi.TransactionContextInterface, fromWalletID string, amount int64) error {
+func (s *SmartContract) Redeem(ctx contractapi.TransactionContextInterface, amount int64, fromWalletID string) error {
 	// Check if caller is from Central Bank MSP
 	mspID, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
@@ -169,12 +169,17 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, fr
 	// Tier 1: 100,000 limit
 	// Tier 2: 1,000,000 limit
 	var limit int64
+	// Enforce Tier Limits (Phase 0 Requirement)
+	// Tier 0: 10,000 limit
+	// Tier 1: 100,000 limit
+	// Tier 2: 1,000,000 limit
+	var limit int64
 	switch sender.Tier {
-	case "Tier 0":
+	case "Tier0":
 		limit = 10000
-	case "Tier 1":
+	case "Tier1":
 		limit = 100000
-	case "Tier 2":
+	case "Tier2":
 		limit = 1000000
 	default:
 		limit = 0 // Unknown tier, block tx

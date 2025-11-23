@@ -48,10 +48,10 @@ contract CBDC is ERC20, Ownable, Pausable {
 
     // Prototype for Offline Reconciliation via EIP-712 or simple signature
     // In production, this logic moves to Go Chaincode, but we prototype here.
-    function depositFor(address to, uint256 amount, uint256 nonce, bytes memory signature) public {
+    function depositFor(address to, uint256 amount, bytes memory signature) public {
         // We need to recover the 'from' address (signer) from the signature
-        // The message signed should include (to, amount, nonce, contractAddress)
-        bytes32 messageHash = keccak256(abi.encodePacked(to, amount, nonce, address(this)));
+        // The message signed should include (to, amount, contractAddress) - Nonce removed to match doc interface
+        bytes32 messageHash = keccak256(abi.encodePacked(to, amount, address(this)));
         bytes32 ethSignedMessageHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash));
 
         address signer = recoverSigner(ethSignedMessageHash, signature);
@@ -59,7 +59,8 @@ contract CBDC is ERC20, Ownable, Pausable {
         require(signer != to, "Cannot transfer to self");
 
         _transfer(signer, to, amount);
-        emit OfflineDeposit(signer, to, amount, nonce);
+        // emit OfflineDeposit(signer, to, amount, nonce); // Nonce not available
+        emit OfflineDeposit(signer, to, amount, 0); 
     }
 
     function recoverSigner(bytes32 _ethSignedMessageHash, bytes memory _signature) internal pure returns (address) {
