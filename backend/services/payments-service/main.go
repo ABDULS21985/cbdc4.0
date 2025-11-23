@@ -16,6 +16,20 @@ type PaymentRequest struct {
 	Amount int64  `json:"amount"`
 }
 
+type TransferRequest struct {
+	FromWalletID string `json:"from_wallet_id"`
+	ToWalletID   string `json:"to_wallet_id"`
+	Amount       int64  `json:"amount"`
+}
+
+type BatchTransferRequest struct {
+	FromWalletID string `json:"from_wallet_id"`
+	Transfers    []struct {
+		ToWalletID string `json:"to_wallet_id"`
+		Amount     int64  `json:"amount"`
+	} `json:"transfers"`
+}
+
 type Service struct {
 	fabric *fabricclient.Client
 }
@@ -68,6 +82,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/payments/p2p", svc.TransferHandler).Methods("POST")
 	r.HandleFunc("/payments/merchant", svc.MerchantPaymentHandler).Methods("POST")
+	r.HandleFunc("/payments/batch", svc.BatchTransferHandler).Methods("POST")
 
 	log.Printf("Payments Service running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
