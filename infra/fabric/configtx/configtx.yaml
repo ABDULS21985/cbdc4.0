@@ -178,3 +178,15 @@ Profiles:
         - *OrgRegulator
       Capabilities:
         <<: *ApplicationCapabilities
+
+  OpsGovernanceChannel:
+    Consortium: SampleConsortium
+    <<: *ChannelDefaults
+    Application:
+      <<: *ApplicationDefaults
+      Organizations:
+        - *OrgCentralBank
+        - *OrgBankConsortium
+        - *OrgRegulator
+      Capabilities:
+        <<: *ApplicationCapabilities

@@ -1,0 +1,26 @@
+[
+    {
+        "name": "pdc-retail-wallets",
+        "policy": "OR('CentralBankMSP.member', 'BankConsortiumMSP.member')",
+        "requiredPeerCount": 1,
+        "maxPeerCount": 3,
+        "blockToLive": 0,
+        "memberOnlyRead": true,
+        "memberOnlyWrite": true,
+        "endorsementPolicy": {
+            "signaturePolicy": "OR('CentralBankMSP.member', 'BankConsortiumMSP.member')"
+        }
+    },
+    {
+        "name": "pdc-intermediary-positions",
+        "policy": "OR('CentralBankMSP.member', 'BankConsortiumMSP.member')",
+        "requiredPeerCount": 1,
+        "maxPeerCount": 3,
+        "blockToLive": 0,
+        "memberOnlyRead": true,
+        "memberOnlyWrite": true,
+        "endorsementPolicy": {
+            "signaturePolicy": "OR('CentralBankMSP.member', 'BankConsortiumMSP.member')"
+        }
+    }
+]
