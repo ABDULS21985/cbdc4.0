@@ -22,6 +22,40 @@ type Service struct {
 	db *sql.DB
 }
 
+func (s *Service) RegisterHandler(w http.ResponseWriter, r *http.Request) {
+	var req models.RegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// Insert User
+	// ID generation: simple UUID-like or username based for now
+	userID := "user-" + req.Username
+
+	_, err = s.db.Exec(`
+		INSERT INTO wallet_db.users (
+			id, username, password_hash, full_name, email, phone_number, bvn, nin, tier, role, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		userID, req.Username, string(hashedPassword), req.FullName, req.Email, req.PhoneNumber, req.BVN, req.NIN, "TIER_1", "CITIZEN", "ACTIVE")
+
+	if err != nil {
+		log.Printf("Failed to register user: %v", err)
+		http.Error(w, "Failed to register user (username/email/phone might be taken)", http.StatusConflict)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"user_id": userID, "status": "created"})
+}
+
 func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -30,10 +64,12 @@ func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query DB for user
-	var passwordHash string
-	// Assuming role is derived from tier or stored separately. For now, default to CITIZEN.
+	var user models.User
+	err := s.db.QueryRow(`
+		SELECT id, password_hash, role, tier, status 
+		FROM wallet_db.users WHERE username = $1`, req.Username).
+		Scan(&user.ID, &user.PasswordHash, &user.Role, &user.Tier, &user.Status)
 
-	err := s.db.QueryRow("SELECT password_hash FROM wallet_db.users WHERE username = $1", req.Username).Scan(&passwordHash)
 	if err == sql.ErrNoRows {
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
@@ -43,21 +79,28 @@ func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.Status != "ACTIVE" {
+		http.Error(w, "Account is not active", http.StatusForbidden)
+		return
+	}
+
 	// Verify Password
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
-	role := "CITIZEN"
-	if req.Username == "admin" {
-		role = "CBN_ADMIN"
-	}
+	// Update Last Login
+	go func() {
+		s.db.Exec("UPDATE wallet_db.users SET last_login_at = $1 WHERE id = $2", time.Now(), user.ID)
+	}()
 
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &models.Claims{
+		UserID:   user.ID,
 		Username: req.Username,
-		Role:     role,
+		Role:     user.Role,
+		Tier:     user.Tier,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			Issuer:    "cbdc-auth-service",
@@ -72,7 +115,7 @@ func (s *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.TokenResponse{Token: tokenString})
+	json.NewEncoder(w).Encode(models.TokenResponse{Token: tokenString, ExpiresAt: expirationTime.Unix()})
 }
 
 func (s *Service) RefreshHandler(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +147,7 @@ func (s *Service) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.TokenResponse{Token: newTokenString})
+	json.NewEncoder(w).Encode(models.TokenResponse{Token: newTokenString, ExpiresAt: expirationTime.Unix()})
 }
 
 func (s *Service) VerifyHandler(w http.ResponseWriter, r *http.Request) {
@@ -130,8 +173,10 @@ func (s *Service) VerifyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"valid":    true,
+		"user_id":  claims.UserID,
 		"username": claims.Username,
 		"role":     claims.Role,
+		"tier":     claims.Tier,
 	})
 }
 
@@ -154,6 +199,7 @@ func main() {
 
 	r := mux.NewRouter()
 
+	r.HandleFunc("/auth/register", svc.RegisterHandler).Methods("POST")
 	r.HandleFunc("/auth/login", svc.LoginHandler).Methods("POST")
 	r.HandleFunc("/auth/refresh", svc.RefreshHandler).Methods("POST")
 	r.HandleFunc("/auth/verify", svc.VerifyHandler).Methods("GET")

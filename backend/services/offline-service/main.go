@@ -29,8 +29,13 @@ func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) 
 
 	// Store DeviceID <-> UserID mapping in DB
 	deviceID := "dev-" + req.PublicKey[:8] // Simplified ID
-	_, err := s.db.Exec("INSERT INTO offline_db.devices (id, public_key, user_id, counter) VALUES ($1, $2, $3, $4)",
-		deviceID, req.PublicKey, req.UserID, 0) // Initialize counter to 0
+
+	_, err := s.db.Exec(`
+		INSERT INTO offline_db.devices (
+			id, public_key, user_id, counter, hardware_id, os_version, trusted_status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		deviceID, req.PublicKey, req.UserID, 0, req.HardwareID, req.OSVersion, "TRUSTED")
+
 	if err != nil {
 		log.Printf("Failed to register device: %v", err)
 		http.Error(w, "Failed to register device", http.StatusInternalServerError)
@@ -50,9 +55,14 @@ func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
 	deviceID := "dev-mock" // Should come from auth context
 	amount := int64(1000)
 	signature := "mock-signature-from-cbn"
+	expiresAt := time.Now().Add(24 * time.Hour) // 24h validity
 
-	_, err := s.db.Exec("INSERT INTO offline_db.vouchers (id, device_id, amount, status, signature) VALUES ($1, $2, $3, $4, $5)",
-		voucherID, deviceID, amount, "Active", signature)
+	_, err := s.db.Exec(`
+		INSERT INTO offline_db.vouchers (
+			id, device_id, amount, status, signature, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6)`,
+		voucherID, deviceID, amount, "Active", signature, expiresAt)
+
 	if err != nil {
 		log.Printf("Failed to create voucher: %v", err)
 		http.Error(w, "Failed to issue purse", http.StatusInternalServerError)
@@ -61,9 +71,10 @@ func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"purse_id":  voucherID,
-		"limit":     amount,
-		"signature": signature,
+		"purse_id":   voucherID,
+		"limit":      amount,
+		"signature":  signature,
+		"expires_at": expiresAt,
 	})
 }
 
@@ -82,7 +93,7 @@ func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 			err := s.db.QueryRow("SELECT counter FROM offline_db.devices WHERE public_key = $1", tx.From).Scan(&currentCounter)
 			if err == nil && tx.Counter > currentCounter {
 				// Valid sequence
-				s.db.Exec("UPDATE offline_db.devices SET counter = $1 WHERE public_key = $2", tx.Counter, tx.From)
+				s.db.Exec("UPDATE offline_db.devices SET counter = $1, last_sync_at = $2 WHERE public_key = $3", tx.Counter, time.Now(), tx.From)
 				validCount++
 			} else {
 				log.Printf("Replay detected or device not found: %s", tx.From)

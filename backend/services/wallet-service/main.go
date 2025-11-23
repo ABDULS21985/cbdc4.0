@@ -26,8 +26,16 @@ func (s *Service) CreateWalletHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Generate Wallet ID (e.g. UUID or Hash)
-	walletID := "wallet-" + req.UserID // Simplified
+	// Default values
+	if req.Type == "" {
+		req.Type = "RETAIL"
+	}
+	if req.Tier == "" {
+		req.Tier = "TIER_1"
+	}
+
+	// 1. Generate Wallet ID
+	walletID := "wallet-" + req.UserID
 
 	// 2. Call Fabric to register wallet on-chain
 	_, err := s.fabric.SubmitTransaction("CreateWallet", walletID, req.UserID, "BankConsortiumMSP", req.Tier)
@@ -38,7 +46,19 @@ func (s *Service) CreateWalletHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Save metadata to local DB
-	_, err = s.db.Exec("INSERT INTO wallet_db.wallets (id, user_id, address) VALUES ($1, $2, $3)", walletID, req.UserID, walletID)
+	dailyLimit := int64(50000) // Default Tier 1
+	if req.Tier == "TIER_2" {
+		dailyLimit = 200000
+	} else if req.Tier == "TIER_3" {
+		dailyLimit = 5000000
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO wallet_db.wallets (
+			id, user_id, address, type, status, currency, tier_level, daily_limit
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		walletID, req.UserID, walletID, req.Type, "ACTIVE", "NGN", req.Tier, dailyLimit)
+
 	if err != nil {
 		log.Printf("Failed to save wallet to DB: %v", err)
 		http.Error(w, "Failed to save wallet metadata", http.StatusInternalServerError)
@@ -46,22 +66,43 @@ func (s *Service) CreateWalletHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"wallet_id": walletID})
+	json.NewEncoder(w).Encode(map[string]string{"wallet_id": walletID, "status": "created"})
 }
 
 func (s *Service) GetWalletHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 
-	// Call Fabric to get state
-	result, err := s.fabric.EvaluateTransaction("GetWallet", id)
+	// Get Metadata from DB
+	var wallet models.Wallet
+	err := s.db.QueryRow(`
+		SELECT id, user_id, address, type, status, currency, tier_level, daily_limit, created_at 
+		FROM wallet_db.wallets WHERE id = $1`, id).
+		Scan(&wallet.ID, &wallet.UserID, &wallet.Address, &wallet.Type, &wallet.Status, &wallet.Currency, &wallet.TierLevel, &wallet.DailyLimit, &wallet.CreatedAt)
+
 	if err != nil {
-		http.Error(w, "Wallet not found", http.StatusNotFound)
+		if err == sql.ErrNoRows {
+			http.Error(w, "Wallet not found", http.StatusNotFound)
+		} else {
+			log.Printf("DB Error: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 		return
 	}
 
+	// Call Fabric to get Balance
+	result, err := s.fabric.EvaluateTransaction("GetWallet", id)
+	if err == nil {
+		var chainWallet struct {
+			Balance int64 `json:"balance"`
+		}
+		if err := json.Unmarshal(result, &chainWallet); err == nil {
+			wallet.Balance = chainWallet.Balance
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(result)
+	json.NewEncoder(w).Encode(wallet)
 }
 
 func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +125,7 @@ func (s *Service) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.WalletBalance{Balance: wallet.Balance})
+	json.NewEncoder(w).Encode(models.WalletBalance{Balance: wallet.Balance, Currency: "NGN"})
 }
 
 func main() {
