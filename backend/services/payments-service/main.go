@@ -1,41 +1,27 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
+	"github.com/centralbank/cbdc/backend/pkg/common/db"
+	"github.com/centralbank/cbdc/backend/pkg/common/migrations"
 	"github.com/centralbank/cbdc/backend/pkg/fabricclient"
+	"github.com/centralbank/cbdc/backend/services/payments-service/models"
 	"github.com/gorilla/mux"
 )
 
-type PaymentRequest struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Amount int64  `json:"amount"`
-}
-
-type TransferRequest struct {
-	FromWalletID string `json:"from_wallet_id"`
-	ToWalletID   string `json:"to_wallet_id"`
-	Amount       int64  `json:"amount"`
-}
-
-type BatchTransferRequest struct {
-	FromWalletID string `json:"from_wallet_id"`
-	Transfers    []struct {
-		ToWalletID string `json:"to_wallet_id"`
-		Amount     int64  `json:"amount"`
-	} `json:"transfers"`
-}
-
 type Service struct {
 	fabric *fabricclient.Client
+	db     *sql.DB
 }
 
 func (s *Service) TransferHandler(w http.ResponseWriter, r *http.Request) {
-	var req PaymentRequest
+	var req models.PaymentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -43,22 +29,69 @@ func (s *Service) TransferHandler(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: Validate input (amount > 0, valid IDs)
 
-	// Call Chaincode
+	// 1. Record "Pending" in DB
+	txID := "tx-" + time.Now().Format("20060102150405") // Simple ID generation
+	_, err := s.db.Exec("INSERT INTO payments_db.transactions (id, from_wallet, to_wallet, amount, status) VALUES ($1, $2, $3, $4, $5)",
+		txID, req.From, req.To, req.Amount, "Pending")
+	if err != nil {
+		log.Printf("Failed to record pending tx: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Call Chaincode
 	// Note: In a real system, 'From' would be derived from the authenticated user context
 	result, err := s.fabric.SubmitTransaction("Transfer", req.From, req.To, string(req.Amount)) // Simplified arg passing
 	if err != nil {
 		log.Printf("Failed to submit transaction: %v", err)
+		// Update DB to Failed
+		s.db.Exec("UPDATE payments_db.transactions SET status = 'Failed' WHERE id = $1", txID)
 		http.Error(w, "Transaction failed", http.StatusInternalServerError)
 		return
 	}
+
+	// 3. Update DB to Confirmed (Optimistic)
+	// In a real system, we'd wait for Fabric event, but here we assume success if Submit returns.
+	s.db.Exec("UPDATE payments_db.transactions SET status = 'Confirmed', tx_hash = $1 WHERE id = $2", "fabric-tx-hash-placeholder", txID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(result) // Assuming chaincode returns JSON
 }
 
+func (s *Service) BatchTransferHandler(w http.ResponseWriter, r *http.Request) {
+	// Similar logic for batch...
+	// For brevity, just calling fabric
+	var req models.BatchTransferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Serialize transfers for chaincode
+	transfersJSON, _ := json.Marshal(req.Transfers)
+	result, err := s.fabric.SubmitTransaction("BatchTransfer", req.FromWalletID, string(transfersJSON))
+	if err != nil {
+		http.Error(w, "Batch Transaction failed", http.StatusInternalServerError)
+		return
+	}
+	w.Write(result)
+}
+
 func main() {
 	cfg := common.LoadConfig()
+
+	// Connect to DB
+	database, err := db.Connect(cfg.DB)
+	if err != nil {
+		log.Fatalf("Failed to connect to DB: %v", err)
+	}
+	defer database.Close()
+
+	// Run Migrations
+	if err := migrations.RunMigrations(database, "backend/migrations/payments"); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
 
 	// Initialize Fabric Client
 	// Note: These paths would need to be real in a deployed env
@@ -77,7 +110,7 @@ func main() {
 		defer fabric.Close()
 	}
 
-	svc := &Service{fabric: fabric}
+	svc := &Service{fabric: fabric, db: database}
 
 	r := mux.NewRouter()
 	r.HandleFunc("/payments/p2p", svc.TransferHandler).Methods("POST")
@@ -91,7 +124,7 @@ func main() {
 }
 
 func (s *Service) MerchantPaymentHandler(w http.ResponseWriter, r *http.Request) {
-	var req PaymentRequest
+	var req models.PaymentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -117,7 +150,18 @@ func (s *Service) GetTransactionHandler(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	id := vars["id"]
 
-	// Call Chaincode
+	// Try DB first
+	var tx models.Transaction
+	err := s.db.QueryRow("SELECT id, from_wallet, to_wallet, amount, status FROM payments_db.transactions WHERE id = $1", id).
+		Scan(&tx.ID, &tx.FromWallet, &tx.ToWallet, &tx.Amount, &tx.Status)
+
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tx)
+		return
+	}
+
+	// Fallback to Fabric
 	result, err := s.fabric.EvaluateTransaction("GetTransaction", id)
 	if err != nil {
 		http.Error(w, "Transaction not found", http.StatusNotFound)
@@ -129,13 +173,20 @@ func (s *Service) GetTransactionHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Service) GetHistoryHandler(w http.ResponseWriter, r *http.Request) {
-	// In a real implementation, this would query an off-chain DB or Fabric History
-	// For now, we'll return a mock list or empty list
+	// Query DB
+	rows, err := s.db.Query("SELECT id, from_wallet, to_wallet, amount, status FROM payments_db.transactions ORDER BY created_at DESC LIMIT 50")
+	if err != nil {
+		http.Error(w, "Failed to fetch history", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
 
-	// Mock response
-	history := []map[string]interface{}{
-		{"id": "tx-1", "amount": 100, "status": "confirmed"},
-		{"id": "tx-2", "amount": 50, "status": "confirmed"},
+	var history []models.Transaction
+	for rows.Next() {
+		var tx models.Transaction
+		if err := rows.Scan(&tx.ID, &tx.FromWallet, &tx.ToWallet, &tx.Amount, &tx.Status); err == nil {
+			history = append(history, tx)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

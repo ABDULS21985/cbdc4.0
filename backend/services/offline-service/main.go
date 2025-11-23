@@ -2,61 +2,73 @@ package main
 
 import (
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
+	"github.com/centralbank/cbdc/backend/pkg/common/db"
+	"github.com/centralbank/cbdc/backend/pkg/common/migrations"
+	"github.com/centralbank/cbdc/backend/services/offline-service/models"
 	"github.com/gorilla/mux"
 )
 
-type RegisterDeviceRequest struct {
-	UserID    string `json:"user_id"`
-	PublicKey string `json:"public_key"` // Hex encoded Ed25519
+type Service struct {
+	db *sql.DB
 }
 
-type OfflineTransaction struct {
-	From      string `json:"from"` // Device Public Key
-	To        string `json:"to"`   // Device Public Key
-	Amount    int64  `json:"amount"`
-	Counter   int64  `json:"counter"`
-	Signature string `json:"signature"` // Hex encoded
-}
-
-type ReconcileRequest struct {
-	Transactions []OfflineTransaction `json:"transactions"`
-}
-
-func RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) {
-	var req RegisterDeviceRequest
+func (s *Service) RegisterDeviceHandler(w http.ResponseWriter, r *http.Request) {
+	var req models.RegisterDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	// TODO: Verify UserID exists and authorize
-	// TODO: Store DeviceID <-> UserID mapping in DB
+	// Store DeviceID <-> UserID mapping in DB
+	deviceID := "dev-" + req.PublicKey[:8] // Simplified ID
+	_, err := s.db.Exec("INSERT INTO offline_db.devices (id, public_key, user_id, counter) VALUES ($1, $2, $3, $4)",
+		deviceID, req.PublicKey, req.UserID, 0) // Initialize counter to 0
+	if err != nil {
+		log.Printf("Failed to register device: %v", err)
+		http.Error(w, "Failed to register device", http.StatusInternalServerError)
+		return
+	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "registered"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "registered", "device_id": deviceID})
 }
 
-func RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Service) RequestPurseHandler(w http.ResponseWriter, r *http.Request) {
 	// Request a new offline purse (signed voucher)
 	// In a real system, this would interact with the Central Bank's signing service
 
-	// Mock response
+	// Create voucher record
+	voucherID := "vouch-" + time.Now().Format("20060102150405")
+	deviceID := "dev-mock" // Should come from auth context
+	amount := int64(1000)
+	signature := "mock-signature-from-cbn"
+
+	_, err := s.db.Exec("INSERT INTO offline_db.vouchers (id, device_id, amount, status, signature) VALUES ($1, $2, $3, $4, $5)",
+		voucherID, deviceID, amount, "Active", signature)
+	if err != nil {
+		log.Printf("Failed to create voucher: %v", err)
+		http.Error(w, "Failed to issue purse", http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"purse_id":  "purse-xyz-789",
-		"limit":     1000,
-		"signature": "mock-signature-from-cbn",
+		"purse_id":  voucherID,
+		"limit":     amount,
+		"signature": signature,
 	})
 }
 
-func ReconcileHandler(w http.ResponseWriter, r *http.Request) {
-	var req ReconcileRequest
+func (s *Service) ReconcileHandler(w http.ResponseWriter, r *http.Request) {
+	var req models.ReconcileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
@@ -65,9 +77,16 @@ func ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 	validCount := 0
 	for _, tx := range req.Transactions {
 		if verifySignature(tx) {
-			// TODO: Check double spend (counter)
-			// TODO: Aggregate net changes
-			validCount++
+			// Check double spend (counter)
+			var currentCounter int64
+			err := s.db.QueryRow("SELECT counter FROM offline_db.devices WHERE public_key = $1", tx.From).Scan(&currentCounter)
+			if err == nil && tx.Counter > currentCounter {
+				// Valid sequence
+				s.db.Exec("UPDATE offline_db.devices SET counter = $1 WHERE public_key = $2", tx.Counter, tx.From)
+				validCount++
+			} else {
+				log.Printf("Replay detected or device not found: %s", tx.From)
+			}
 		} else {
 			log.Printf("Invalid signature for tx from %s", tx.From)
 		}
@@ -82,7 +101,7 @@ func ReconcileHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func verifySignature(tx OfflineTransaction) bool {
+func verifySignature(tx models.OfflineTransaction) bool {
 	pubKey, err := hex.DecodeString(tx.From)
 	if err != nil || len(pubKey) != ed25519.PublicKeySize {
 		return false
@@ -102,11 +121,26 @@ func verifySignature(tx OfflineTransaction) bool {
 
 func main() {
 	cfg := common.LoadConfig()
+
+	// Connect to DB
+	database, err := db.Connect(cfg.DB)
+	if err != nil {
+		log.Fatalf("Failed to connect to DB: %v", err)
+	}
+	defer database.Close()
+
+	// Run Migrations
+	if err := migrations.RunMigrations(database, "backend/migrations/offline"); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	svc := &Service{db: database}
+
 	r := mux.NewRouter()
 
-	r.HandleFunc("/offline/devices", RegisterDeviceHandler).Methods("POST")
-	r.HandleFunc("/offline/purse", RequestPurseHandler).Methods("POST")
-	r.HandleFunc("/offline/reconcile", ReconcileHandler).Methods("POST")
+	r.HandleFunc("/offline/devices", svc.RegisterDeviceHandler).Methods("POST")
+	r.HandleFunc("/offline/purse", svc.RequestPurseHandler).Methods("POST")
+	r.HandleFunc("/offline/reconcile", svc.ReconcileHandler).Methods("POST")
 
 	log.Printf("Offline Service running on :%s", cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))

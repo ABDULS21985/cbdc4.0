@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/centralbank/cbdc/backend/pkg/common"
 	"github.com/gorilla/mux"
@@ -12,6 +14,10 @@ import (
 type KYCRequest struct {
 	NationalID string `json:"national_id"`
 	Name       string `json:"name"`
+}
+
+type GatewayService struct {
+	client *http.Client
 }
 
 func ValidateKYCHandler(w http.ResponseWriter, r *http.Request) {
@@ -27,12 +33,6 @@ func ValidateKYCHandler(w http.ResponseWriter, r *http.Request) {
 	// Mock success
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "verified", "risk_level": "low"})
-}
-
-// GatewayService acts as a B2B API for banks
-type GatewayService struct {
-	// In a real app, this would hold clients to internal gRPC services
-	// For now, we stub the logic or call the other services via HTTP
 }
 
 func (s *GatewayService) OnboardCustomerHandler(w http.ResponseWriter, r *http.Request) {
@@ -61,10 +61,28 @@ func (s *GatewayService) InitiateTransferHandler(w http.ResponseWriter, r *http.
 // WebhookDeliveryStub simulates sending a webhook to a bank
 func (s *GatewayService) WebhookDeliveryStub(w http.ResponseWriter, r *http.Request) {
 	// This endpoint simulates the Gateway *receiving* a trigger to send a webhook
-	// In production, this would be an internal event listener
 	
-	log.Println("Simulating Webhook Delivery to Bank System...")
-	// Logic to POST to Bank's registered URL would go here
+	targetURL := "http://localhost:9090/bank/webhook" // In real world, look up from DB based on bank ID
+	payload := map[string]string{
+		"event": "payment_received",
+		"tx_id": "tx-999",
+		"amount": "100",
+	}
+	jsonPayload, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", targetURL, bytes.NewBuffer(jsonPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Bank-API-Key", "secret")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		log.Printf("Failed to deliver webhook: %v", err)
+		http.Error(w, "Webhook delivery failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	
+	log.Printf("Webhook delivered to %s, status: %s", targetURL, resp.Status)
 	
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "webhook_delivered"})
@@ -72,7 +90,9 @@ func (s *GatewayService) WebhookDeliveryStub(w http.ResponseWriter, r *http.Requ
 
 func main() {
 	cfg := common.LoadConfig()
-	svc := &GatewayService{}
+	svc := &GatewayService{
+		client: &http.Client{Timeout: 10 * time.Second},
+	}
 
 	r := mux.NewRouter()
 
@@ -80,7 +100,7 @@ func main() {
 
 	r.HandleFunc("/api/v1/onboard", svc.OnboardCustomerHandler).Methods("POST")
 	r.HandleFunc("/api/v1/transfer", svc.InitiateTransferHandler).Methods("POST")
-	r.HandleFunc("/api/v1/kyc/validate", svc.ValidateKYCHandler).Methods("POST")
+	r.HandleFunc("/api/v1/kyc/validate", ValidateKYCHandler).Methods("POST")
 	r.HandleFunc("/internal/webhook/trigger", svc.WebhookDeliveryStub).Methods("POST")
 
 	log.Printf("Intermediary Gateway running on :%s", cfg.Port)
